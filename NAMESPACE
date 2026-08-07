@@ -1,0 +1,3 @@
+useDynLib(cudaverseCUDA, .registration = TRUE)
+import(cudaverse)
+export(cudaverse_cuda_backend_factory)

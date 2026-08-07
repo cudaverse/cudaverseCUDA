@@ -1,0 +1,11 @@
+*.Rcheck/
+*.tar.gz
+*.tgz
+*.zip
+src/*.o
+src/*.dll
+src/*.so
+src/*.dylib
+.Rproj.user/
+inst/reports/stage1-small-medium.json
+inst/reports/stage1-4096-*.json
