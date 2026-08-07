@@ -1,0 +1,28 @@
+Package: cudaverseCUDA
+Title: Native CUDA Backend Extension for Cudaverse
+Version: 0.1.0.9000
+Authors@R:
+    person("Yaoxiang", "Li", email = "liyaoxiang@outlook.com",
+           role = c("aut", "cre"))
+Description: Provides an optional lightweight native CUDA backend for the
+    'cudaverse' package. The extension dynamically discovers the NVIDIA CUDA
+    Driver and cuBLAS libraries at runtime and implements device diagnostics,
+    allocation, host-device transfer, synchronization, and dense matrix
+    multiplication without linking to 'LibTorch' or requiring a CUDA Toolkit
+    during package installation.
+License: MIT + file LICENSE
+URL: https://github.com/cudaverse/cudaverseCUDA
+BugReports: https://github.com/cudaverse/cudaverseCUDA/issues
+Encoding: UTF-8
+Language: en-US
+SystemRequirements: NVIDIA CUDA driver; NVIDIA cuBLAS 12 at runtime for matrix multiplication
+Imports:
+    cudaverse (>= 0.2.0.9000)
+Remotes:
+    cudaverse/cudaverse@develop/native-cuda
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+NeedsCompilation: yes
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3

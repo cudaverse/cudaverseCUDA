@@ -1,0 +1,90 @@
+name: R-CMD-check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.os }} (R release)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::rcmdcheck
+          needs: check
+      - uses: r-lib/actions/check-r-package@v2
+        with:
+          args: '"--no-manual"'
+          build_args: '"--no-manual"'
+
+  redistribution-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+      - run: Rscript tools/check-redistributables.R .
+
+  cuda-12-8-1-abi:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install R build toolchain
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends r-base-dev
+      - name: Compile the registered native bridge
+        run: R CMD SHLIB src/native_backend.cpp -o cudaverseCUDA.so
+        env:
+          PKG_LIBS: -ldl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cudaverseCUDA-linux-cuda-12.8.1-abi-${{ github.sha }}
+          path: cudaverseCUDA.so
+          retention-days: 14
+
+  package-artifacts:
+    name: artifact (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          needs: check
+      - name: Build installable artifact
+        shell: Rscript {0}
+        run: |
+          system2(file.path(R.home("bin"), "R"), c("CMD", "INSTALL", "--build", "."))
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cudaverseCUDA-${{ runner.os }}-${{ github.sha }}
+          path: |
+            cudaverseCUDA_*.zip
+            cudaverseCUDA_*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
