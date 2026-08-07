@@ -17,7 +17,6 @@ test_that("native diagnostics and factory follow the extension contract", {
     "synchronize", "release", "error_translate"
   ) %in% names(factory)))
 })
-
 test_that("native errors translate into structured cudaverse conditions", {
   factory <- cudaverse_cuda_backend_factory()
   raw <- simpleError("injected CUDA failure")
@@ -86,4 +85,3 @@ test_that("one thousand allocate-transfer-free cycles do not leak VRAM", {
 
   expect_lte(abs(final - baseline), 1024^2)
 })
-
