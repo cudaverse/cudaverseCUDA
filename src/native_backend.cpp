@@ -1,7 +1,3 @@
-#include <R.h>
-#include <Rinternals.h>
-#include <R_ext/Rdynload.h>
-
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -9,6 +5,13 @@
 #include <limits>
 #include <string>
 #include <vector>
+
+// Include the C++ standard library before R headers. Rinternals.h defines a
+// legacy length() macro that otherwise collides with libc++ locale methods on
+// macOS.
+#include <R.h>
+#include <Rinternals.h>
+#include <R_ext/Rdynload.h>
 
 #ifdef _WIN32
 #include <windows.h>
