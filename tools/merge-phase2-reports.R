@@ -20,6 +20,9 @@ first <- fragments[[1L]]
 report <- first
 report$schema <- "cudaverse-native-phase2/1"
 report$source_fragments <- basename(files)
+report$fragment_sources <- stats::setNames(
+  lapply(fragments, `[[`, "source"), basename(files)
+)
 report$benchmarks <- list()
 report$contract$peak_vram_definition <- paste(
   "cudaverseCUDA allocation high-water bytes for native; torch CUDA allocator",
