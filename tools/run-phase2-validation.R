@@ -106,6 +106,41 @@ structured_errors <- c(
 structured_errors$passed <- isTRUE(structured_errors$structured) &&
   isTRUE(structured_errors$passed)
 
+before <- snapshot(reset = TRUE)
+condition <- tryCatch(
+  cudaverse:::.backend_call(
+    "native", "test_inject_cuda_error", 4096L
+  ),
+  error = identity
+)
+for (iteration in seq_len(99L)) {
+  try(
+    cudaverse:::.backend_call(
+      "native", "test_inject_cuda_error", 4096L
+    ),
+    silent = TRUE
+  )
+}
+after <- snapshot()
+cuda_errors <- c(
+  list(
+    injections = 100L,
+    temporary_allocation_bytes = 4096L,
+    condition_classes = class(condition),
+    backend = condition$backend,
+    operation = condition$operation,
+    message = conditionMessage(condition),
+    structured = inherits(condition, "cudaverse_native_error") &&
+      inherits(condition, "cudaverse_backend_error") &&
+      identical(condition$backend, "native") &&
+      identical(condition$operation, "test_inject_cuda_error") &&
+      grepl("OUT_OF_MEMORY|out of memory", conditionMessage(condition))
+  ),
+  memory_result(before, after)
+)
+cuda_errors$passed <- isTRUE(cuda_errors$structured) &&
+  isTRUE(cuda_errors$passed)
+
 pipeline_values <- matrix(stats::rnorm(400), 50, 8)
 fit <- factory$algorithm_pca(pipeline_values, 4L, TRUE, FALSE)
 state <- factory$algorithm_knn_prepare(fit$x)
@@ -182,10 +217,14 @@ report <- list(
   ),
   lifecycle = lifecycle,
   structured_errors = structured_errors,
+  cuda_errors = cuda_errors,
   repeated_pipeline = repeated_pipeline,
   interruption = interruption,
   passed = all(vapply(
-    list(lifecycle, structured_errors, repeated_pipeline, interruption),
+    list(
+      lifecycle, structured_errors, cuda_errors, repeated_pipeline,
+      interruption
+    ),
     function(x) isTRUE(x$passed), logical(1)
   ))
 )

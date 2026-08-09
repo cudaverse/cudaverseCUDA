@@ -290,6 +290,7 @@ cudaverse_cuda_backend_factory <- function() {
     algorithm_knn_select = .native_knn_select,
     synchronize = .native_synchronize,
     release = .native_release,
+    test_inject_cuda_error = .native_test_inject_cuda_error,
     error_translate = .native_error_translate
   )
 }
@@ -300,6 +301,10 @@ cudaverse_cuda_backend_factory <- function() {
 
 .native_memory_tracker <- function(reset = FALSE) {
   .Call(C_cudaverse_cuda_memory_tracker, reset)
+}
+
+.native_test_inject_cuda_error <- function(bytes = 4096L) {
+  .Call(C_cudaverse_cuda_test_inject_error, as.integer(bytes))
 }
 
 .native_share <- function(storage) {

@@ -1434,6 +1434,22 @@ extern "C" SEXP C_cudaverse_cuda_synchronize() {
   return Rf_ScalarLogical(1);
 }
 
+extern "C" SEXP C_cudaverse_cuda_test_inject_error(SEXP bytes_sexp) {
+  require_backend();
+  int bytes = Rf_asInteger(bytes_sexp);
+  if (bytes == NA_INTEGER || bytes < 1) {
+    Rf_error("`bytes` must be one positive integer.");
+  }
+  R_CheckUserInterrupt();
+  try {
+    DeviceMemory temporary(static_cast<std::size_t>(bytes));
+    cuda_or_throw(static_cast<CUresult>(2), "injected cuMemAlloc");
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
+}
+
 extern "C" SEXP C_cudaverse_cuda_release(SEXP pointer) {
   get_buffer(pointer);
   release_reference(pointer);
@@ -1502,6 +1518,8 @@ static const R_CallMethodDef call_methods[] = {
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_matmul), 2},
     {"C_cudaverse_cuda_synchronize",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_synchronize), 0},
+    {"C_cudaverse_cuda_test_inject_error",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_test_inject_error), 1},
     {"C_cudaverse_cuda_release",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_release), 1},
     {"C_cudaverse_cuda_share",

@@ -67,6 +67,14 @@ validation_rows <- c(
     " |"
   ),
   paste0(
+    "| injected CUDA OOM | ", number(validation$cuda_errors$injections),
+    " errors | ",
+    number(validation$cuda_errors$whole_device_absolute_difference_bytes),
+    " B | ",
+    if (logical_value(validation$cuda_errors$passed)) "pass" else "FAIL",
+    " |"
+  ),
+  paste0(
     "| repeated PCA -> kNN | ", number(validation$repeated_pipeline$cycles),
     " cycles | ",
     number(validation$repeated_pipeline$whole_device_absolute_difference_bytes),
