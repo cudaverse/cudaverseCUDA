@@ -205,7 +205,8 @@ report <- list(
     ),
     peak_vram_definition = paste(
       "high-water mark of allocations owned by cudaverseCUDA; external CUDA",
-      "library/context allocations are excluded"
+      "library/context allocations are excluded. The torch comparison uses",
+      "the torch CUDA allocator's allocated/reserved byte peaks"
     )
   ),
   installed_size_bytes = list(
@@ -392,6 +393,23 @@ for (shape_name in names(shapes)) {
     gc()
     tracker_after <- cudaverseCUDA:::.native_memory_tracker()
     device_after <- cudaverseCUDA:::.native_memory_info()
+    torch_memory <- if (identical(backend, "torch")) {
+      torch::cuda_memory_stats()
+    } else {
+      NULL
+    }
+    backend_peak <- if (identical(backend, "native")) {
+      tracker_during$peak - tracker_before$current
+    } else if (identical(backend, "torch")) {
+      unname(torch_memory$allocated_bytes$all$peak)
+    } else {
+      0
+    }
+    backend_reserved_peak <- if (identical(backend, "torch")) {
+      unname(torch_memory$reserved_bytes$all$peak)
+    } else {
+      NA_real_
+    }
 
     report$benchmarks[[shape_name]][[backend]] <- list(
       status = "complete",
@@ -414,6 +432,15 @@ for (shape_name in names(shapes)) {
           tracker_before$current,
         operation_owned_post_cleanup_difference_bytes =
           tracker_after$current - tracker_before$current,
+        backend_allocator_peak_bytes = backend_peak,
+        backend_allocator_reserved_peak_bytes = backend_reserved_peak,
+        backend_allocator_peak_source = if (identical(backend, "native")) {
+          "cudaverseCUDA allocation tracker"
+        } else if (identical(backend, "torch")) {
+          "torch CUDA allocator statistics"
+        } else {
+          "not applicable (CPU)"
+        },
         whole_device_used_before_bytes = device_before$used,
         whole_device_used_with_result_bytes = device_during$used,
         whole_device_used_after_cleanup_bytes = device_after$used,
