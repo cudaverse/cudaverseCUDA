@@ -4413,4 +4413,606 @@ $L__BB18_45:
 	ret;
 
 }
+	// .globl	cudaverse_fill_f64
+.visible .entry cudaverse_fill_f64(
+	.param .u64 cudaverse_fill_f64_param_0,
+	.param .f64 cudaverse_fill_f64_param_1,
+	.param .u64 cudaverse_fill_f64_param_2
+)
+{
+	.reg .pred 	%p<2>;
+	.reg .b32 	%r<5>;
+	.reg .f64 	%fd<2>;
+	.reg .b64 	%rd<7>;
+
+
+	ld.param.u64 	%rd2, [cudaverse_fill_f64_param_0];
+	ld.param.f64 	%fd1, [cudaverse_fill_f64_param_1];
+	ld.param.u64 	%rd3, [cudaverse_fill_f64_param_2];
+	mov.u32 	%r1, %ctaid.x;
+	mov.u32 	%r2, %ntid.x;
+	mov.u32 	%r3, %tid.x;
+	mad.lo.s32 	%r4, %r1, %r2, %r3;
+	cvt.u64.u32 	%rd1, %r4;
+	setp.ge.u64 	%p1, %rd1, %rd3;
+	@%p1 bra 	$L__BB19_2;
+
+	cvta.to.global.u64 	%rd4, %rd2;
+	shl.b64 	%rd5, %rd1, 3;
+	add.s64 	%rd6, %rd4, %rd5;
+	st.global.f64 	[%rd6], %fd1;
+
+$L__BB19_2:
+	ret;
+
+}
+	// .globl	cudaverse_sparse_row_sums_f64
+.visible .entry cudaverse_sparse_row_sums_f64(
+	.param .u64 cudaverse_sparse_row_sums_f64_param_0,
+	.param .u64 cudaverse_sparse_row_sums_f64_param_1,
+	.param .u64 cudaverse_sparse_row_sums_f64_param_2,
+	.param .u32 cudaverse_sparse_row_sums_f64_param_3
+)
+{
+	.reg .pred 	%p<7>;
+	.reg .b32 	%r<25>;
+	.reg .f64 	%fd<25>;
+	.reg .b64 	%rd<23>;
+
+
+	ld.param.u64 	%rd9, [cudaverse_sparse_row_sums_f64_param_0];
+	ld.param.u64 	%rd11, [cudaverse_sparse_row_sums_f64_param_1];
+	ld.param.u64 	%rd10, [cudaverse_sparse_row_sums_f64_param_2];
+	ld.param.u32 	%r13, [cudaverse_sparse_row_sums_f64_param_3];
+	cvta.to.global.u64 	%rd1, %rd11;
+	mov.u32 	%r14, %ntid.x;
+	mov.u32 	%r15, %ctaid.x;
+	mov.u32 	%r16, %tid.x;
+	mad.lo.s32 	%r1, %r15, %r14, %r16;
+	setp.ge.s32 	%p1, %r1, %r13;
+	@%p1 bra 	$L__BB20_9;
+
+	cvt.s64.s32 	%rd2, %r1;
+	cvta.to.global.u64 	%rd12, %rd9;
+	mul.wide.s32 	%rd13, %r1, 4;
+	add.s64 	%rd14, %rd12, %rd13;
+	ld.global.u32 	%r2, [%rd14];
+	ld.global.u32 	%r3, [%rd14+4];
+	setp.ge.s32 	%p2, %r2, %r3;
+	mov.f64 	%fd24, 0d0000000000000000;
+	@%p2 bra 	$L__BB20_8;
+
+	add.s32 	%r17, %r2, 1;
+	max.s32 	%r4, %r3, %r17;
+	sub.s32 	%r18, %r4, %r2;
+	and.b32  	%r22, %r18, 3;
+	setp.eq.s32 	%p3, %r22, 0;
+	mov.f64 	%fd24, 0d0000000000000000;
+	mov.u32 	%r23, %r2;
+	@%p3 bra 	$L__BB20_5;
+
+	mul.wide.s32 	%rd15, %r2, 8;
+	add.s64 	%rd21, %rd1, %rd15;
+	mov.f64 	%fd24, 0d0000000000000000;
+	mov.u32 	%r23, %r2;
+
+$L__BB20_4:
+	.pragma "nounroll";
+	ld.global.f64 	%fd12, [%rd21];
+	add.f64 	%fd24, %fd24, %fd12;
+	add.s32 	%r23, %r23, 1;
+	add.s64 	%rd21, %rd21, 8;
+	add.s32 	%r22, %r22, -1;
+	setp.ne.s32 	%p4, %r22, 0;
+	@%p4 bra 	$L__BB20_4;
+
+$L__BB20_5:
+	not.b32 	%r19, %r2;
+	add.s32 	%r20, %r4, %r19;
+	setp.lt.u32 	%p5, %r20, 3;
+	@%p5 bra 	$L__BB20_8;
+
+	mul.wide.s32 	%rd16, %r23, 8;
+	add.s64 	%rd17, %rd1, %rd16;
+	add.s64 	%rd22, %rd17, 16;
+
+$L__BB20_7:
+	ld.global.f64 	%fd13, [%rd22+-16];
+	add.f64 	%fd14, %fd24, %fd13;
+	ld.global.f64 	%fd15, [%rd22+-8];
+	add.f64 	%fd16, %fd14, %fd15;
+	ld.global.f64 	%fd17, [%rd22];
+	add.f64 	%fd18, %fd16, %fd17;
+	ld.global.f64 	%fd19, [%rd22+8];
+	add.f64 	%fd24, %fd18, %fd19;
+	add.s64 	%rd22, %rd22, 32;
+	add.s32 	%r23, %r23, 4;
+	setp.lt.s32 	%p6, %r23, %r3;
+	@%p6 bra 	$L__BB20_7;
+
+$L__BB20_8:
+	cvta.to.global.u64 	%rd18, %rd10;
+	shl.b64 	%rd19, %rd2, 3;
+	add.s64 	%rd20, %rd18, %rd19;
+	st.global.f64 	[%rd20], %fd24;
+
+$L__BB20_9:
+	ret;
+
+}
+	// .globl	cudaverse_sparse_col_sums_f64
+.visible .entry cudaverse_sparse_col_sums_f64(
+	.param .u64 cudaverse_sparse_col_sums_f64_param_0,
+	.param .u64 cudaverse_sparse_col_sums_f64_param_1,
+	.param .u64 cudaverse_sparse_col_sums_f64_param_2,
+	.param .u32 cudaverse_sparse_col_sums_f64_param_3
+)
+{
+	.reg .pred 	%p<2>;
+	.reg .b32 	%r<7>;
+	.reg .f64 	%fd<3>;
+	.reg .b64 	%rd<13>;
+
+
+	ld.param.u64 	%rd1, [cudaverse_sparse_col_sums_f64_param_0];
+	ld.param.u64 	%rd2, [cudaverse_sparse_col_sums_f64_param_1];
+	ld.param.u64 	%rd3, [cudaverse_sparse_col_sums_f64_param_2];
+	ld.param.u32 	%r2, [cudaverse_sparse_col_sums_f64_param_3];
+	mov.u32 	%r3, %ctaid.x;
+	mov.u32 	%r4, %ntid.x;
+	mov.u32 	%r5, %tid.x;
+	mad.lo.s32 	%r1, %r3, %r4, %r5;
+	setp.ge.s32 	%p1, %r1, %r2;
+	@%p1 bra 	$L__BB21_2;
+
+	cvta.to.global.u64 	%rd4, %rd1;
+	mul.wide.s32 	%rd5, %r1, 4;
+	add.s64 	%rd6, %rd4, %rd5;
+	ld.global.u32 	%r6, [%rd6];
+	cvta.to.global.u64 	%rd7, %rd3;
+	mul.wide.s32 	%rd8, %r6, 8;
+	add.s64 	%rd9, %rd7, %rd8;
+	cvta.to.global.u64 	%rd10, %rd2;
+	mul.wide.s32 	%rd11, %r1, 8;
+	add.s64 	%rd12, %rd10, %rd11;
+	ld.global.f64 	%fd1, [%rd12];
+	atom.global.add.f64 	%fd2, [%rd9], %fd1;
+
+$L__BB21_2:
+	ret;
+
+}
+	// .globl	cudaverse_sparse_normalize_f64
+.visible .entry cudaverse_sparse_normalize_f64(
+	.param .u64 cudaverse_sparse_normalize_f64_param_0,
+	.param .u64 cudaverse_sparse_normalize_f64_param_1,
+	.param .u64 cudaverse_sparse_normalize_f64_param_2,
+	.param .u64 cudaverse_sparse_normalize_f64_param_3,
+	.param .u64 cudaverse_sparse_normalize_f64_param_4,
+	.param .u32 cudaverse_sparse_normalize_f64_param_5,
+	.param .u32 cudaverse_sparse_normalize_f64_param_6,
+	.param .f64 cudaverse_sparse_normalize_f64_param_7,
+	.param .u32 cudaverse_sparse_normalize_f64_param_8
+)
+{
+	.reg .pred 	%p<11>;
+	.reg .f32 	%f<3>;
+	.reg .b32 	%r<37>;
+	.reg .f64 	%fd<88>;
+	.reg .b64 	%rd<20>;
+
+
+	ld.param.u64 	%rd2, [cudaverse_sparse_normalize_f64_param_0];
+	ld.param.u64 	%rd3, [cudaverse_sparse_normalize_f64_param_1];
+	ld.param.u64 	%rd4, [cudaverse_sparse_normalize_f64_param_2];
+	ld.param.u64 	%rd5, [cudaverse_sparse_normalize_f64_param_3];
+	ld.param.u64 	%rd6, [cudaverse_sparse_normalize_f64_param_4];
+	ld.param.u32 	%r14, [cudaverse_sparse_normalize_f64_param_5];
+	ld.param.u32 	%r12, [cudaverse_sparse_normalize_f64_param_6];
+	ld.param.f64 	%fd12, [cudaverse_sparse_normalize_f64_param_7];
+	ld.param.u32 	%r13, [cudaverse_sparse_normalize_f64_param_8];
+	mov.u32 	%r15, %ntid.x;
+	mov.u32 	%r16, %ctaid.x;
+	mov.u32 	%r17, %tid.x;
+	mad.lo.s32 	%r1, %r16, %r15, %r17;
+	setp.ge.s32 	%p1, %r1, %r14;
+	@%p1 bra 	$L__BB22_12;
+
+	cvta.to.global.u64 	%rd7, %rd4;
+	setp.eq.s32 	%p2, %r12, 0;
+	selp.b64 	%rd8, %rd2, %rd3, %p2;
+	cvta.to.global.u64 	%rd9, %rd8;
+	cvt.s64.s32 	%rd1, %r1;
+	mul.wide.s32 	%rd10, %r1, 4;
+	add.s64 	%rd11, %rd9, %rd10;
+	mul.wide.s32 	%rd12, %r1, 8;
+	add.s64 	%rd13, %rd7, %rd12;
+	ld.global.f64 	%fd13, [%rd13];
+	mul.f64 	%fd14, %fd13, %fd12;
+	ld.global.u32 	%r18, [%rd11];
+	cvta.to.global.u64 	%rd14, %rd5;
+	mul.wide.s32 	%rd15, %r18, 8;
+	add.s64 	%rd16, %rd14, %rd15;
+	ld.global.f64 	%fd15, [%rd16];
+	div.rn.f64 	%fd87, %fd14, %fd15;
+	setp.eq.s32 	%p3, %r13, 0;
+	@%p3 bra 	$L__BB22_11;
+
+	{
+	.reg .b32 %temp; 
+	mov.b64 	{%temp, %r19}, %fd87;
+	}
+	mov.b32 	%f1, %r19;
+	setp.lt.f32 	%p4, %f1, 0f3FE55555;
+	setp.gt.f32 	%p5, %f1, 0fBFD99999;
+	and.pred  	%p6, %p4, %p5;
+	@%p6 bra 	$L__BB22_10;
+	bra.uni 	$L__BB22_3;
+
+$L__BB22_10:
+	add.f64 	%fd62, %fd87, 0d4000000000000000;
+	div.rn.f64 	%fd63, %fd87, %fd62;
+	mul.f64 	%fd64, %fd87, %fd63;
+	neg.f64 	%fd65, %fd64;
+	sub.f64 	%fd66, %fd87, %fd64;
+	mul.f64 	%fd67, %fd66, %fd66;
+	mov.f64 	%fd68, 0d3ED087FFCEB2DC44;
+	mov.f64 	%fd69, 0d3EB372FB2FBE14B5;
+	fma.rn.f64 	%fd70, %fd69, %fd67, %fd68;
+	mov.f64 	%fd71, 0d3EF3B9FF890F468C;
+	fma.rn.f64 	%fd72, %fd70, %fd67, %fd71;
+	mov.f64 	%fd73, 0d3F17457EFD51BAF8;
+	fma.rn.f64 	%fd74, %fd72, %fd67, %fd73;
+	mov.f64 	%fd75, 0d3F3C71C8DE3CE825;
+	fma.rn.f64 	%fd76, %fd74, %fd67, %fd75;
+	mov.f64 	%fd77, 0d3F6249248FA4661F;
+	fma.rn.f64 	%fd78, %fd76, %fd67, %fd77;
+	mov.f64 	%fd79, 0d3F899999999D70C4;
+	fma.rn.f64 	%fd80, %fd78, %fd67, %fd79;
+	mov.f64 	%fd81, 0d3FB5555555555462;
+	fma.rn.f64 	%fd82, %fd80, %fd67, %fd81;
+	mul.f64 	%fd83, %fd67, %fd82;
+	fma.rn.f64 	%fd84, %fd83, %fd66, %fd65;
+	add.f64 	%fd87, %fd87, %fd84;
+	bra.uni 	$L__BB22_11;
+
+$L__BB22_3:
+	add.f64 	%fd85, %fd87, 0d3FF0000000000000;
+	{
+	.reg .b32 %temp; 
+	mov.b64 	{%temp, %r33}, %fd85;
+	}
+	{
+	.reg .b32 %temp; 
+	mov.b64 	{%r34, %temp}, %fd85;
+	}
+	setp.gt.s32 	%p7, %r33, 1048575;
+	mov.u32 	%r35, -1023;
+	@%p7 bra 	$L__BB22_5;
+
+	mul.f64 	%fd85, %fd85, 0d4350000000000000;
+	{
+	.reg .b32 %temp; 
+	mov.b64 	{%temp, %r33}, %fd85;
+	}
+	{
+	.reg .b32 %temp; 
+	mov.b64 	{%r34, %temp}, %fd85;
+	}
+	mov.u32 	%r35, -1077;
+
+$L__BB22_5:
+	add.s32 	%r22, %r33, -1;
+	setp.lt.u32 	%p8, %r22, 2146435071;
+	@%p8 bra 	$L__BB22_7;
+	bra.uni 	$L__BB22_6;
+
+$L__BB22_7:
+	shr.u32 	%r24, %r33, 20;
+	add.s32 	%r36, %r35, %r24;
+	and.b32  	%r25, %r33, -2146435073;
+	or.b32  	%r26, %r25, 1072693248;
+	mov.b64 	%fd86, {%r34, %r26};
+	setp.lt.s32 	%p10, %r26, 1073127583;
+	@%p10 bra 	$L__BB22_9;
+
+	{
+	.reg .b32 %temp; 
+	mov.b64 	{%r27, %temp}, %fd86;
+	}
+	{
+	.reg .b32 %temp; 
+	mov.b64 	{%temp, %r28}, %fd86;
+	}
+	add.s32 	%r29, %r28, -1048576;
+	mov.b64 	%fd86, {%r27, %r29};
+	add.s32 	%r36, %r36, 1;
+
+$L__BB22_9:
+	add.f64 	%fd18, %fd86, 0d3FF0000000000000;
+	mov.f64 	%fd19, 0d3FF0000000000000;
+	rcp.approx.ftz.f64 	%fd20, %fd18;
+	neg.f64 	%fd21, %fd18;
+	fma.rn.f64 	%fd22, %fd21, %fd20, %fd19;
+	fma.rn.f64 	%fd23, %fd22, %fd22, %fd22;
+	fma.rn.f64 	%fd24, %fd23, %fd20, %fd20;
+	add.f64 	%fd25, %fd86, 0dBFF0000000000000;
+	mul.f64 	%fd26, %fd25, %fd24;
+	fma.rn.f64 	%fd27, %fd25, %fd24, %fd26;
+	mul.f64 	%fd28, %fd27, %fd27;
+	mov.f64 	%fd29, 0d3ED0EE258B7A8B04;
+	mov.f64 	%fd30, 0d3EB1380B3AE80F1E;
+	fma.rn.f64 	%fd31, %fd30, %fd28, %fd29;
+	mov.f64 	%fd32, 0d3EF3B2669F02676F;
+	fma.rn.f64 	%fd33, %fd31, %fd28, %fd32;
+	mov.f64 	%fd34, 0d3F1745CBA9AB0956;
+	fma.rn.f64 	%fd35, %fd33, %fd28, %fd34;
+	mov.f64 	%fd36, 0d3F3C71C72D1B5154;
+	fma.rn.f64 	%fd37, %fd35, %fd28, %fd36;
+	mov.f64 	%fd38, 0d3F624924923BE72D;
+	fma.rn.f64 	%fd39, %fd37, %fd28, %fd38;
+	mov.f64 	%fd40, 0d3F8999999999A3C4;
+	fma.rn.f64 	%fd41, %fd39, %fd28, %fd40;
+	mov.f64 	%fd42, 0d3FB5555555555554;
+	fma.rn.f64 	%fd43, %fd41, %fd28, %fd42;
+	sub.f64 	%fd44, %fd25, %fd27;
+	add.f64 	%fd45, %fd44, %fd44;
+	neg.f64 	%fd46, %fd27;
+	fma.rn.f64 	%fd47, %fd46, %fd25, %fd45;
+	mul.f64 	%fd48, %fd24, %fd47;
+	mul.f64 	%fd49, %fd28, %fd43;
+	fma.rn.f64 	%fd50, %fd49, %fd27, %fd48;
+	xor.b32  	%r30, %r36, -2147483648;
+	mov.u32 	%r31, -2147483648;
+	mov.u32 	%r32, 1127219200;
+	mov.b64 	%fd51, {%r30, %r32};
+	mov.b64 	%fd52, {%r31, %r32};
+	sub.f64 	%fd53, %fd51, %fd52;
+	mov.f64 	%fd54, 0d3FE62E42FEFA39EF;
+	fma.rn.f64 	%fd55, %fd53, %fd54, %fd27;
+	neg.f64 	%fd56, %fd53;
+	fma.rn.f64 	%fd57, %fd56, %fd54, %fd55;
+	sub.f64 	%fd58, %fd57, %fd27;
+	sub.f64 	%fd59, %fd50, %fd58;
+	mov.f64 	%fd60, 0d3C7ABC9E3B39803F;
+	fma.rn.f64 	%fd61, %fd53, %fd60, %fd59;
+	add.f64 	%fd87, %fd55, %fd61;
+	bra.uni 	$L__BB22_11;
+
+$L__BB22_6:
+	mov.f64 	%fd16, 0d7FF0000000000000;
+	fma.rn.f64 	%fd17, %fd85, %fd16, %fd16;
+	{
+	.reg .b32 %temp; 
+	mov.b64 	{%temp, %r23}, %fd85;
+	}
+	mov.b32 	%f2, %r23;
+	setp.eq.f32 	%p9, %f2, 0f00000000;
+	selp.f64 	%fd87, 0dFFF0000000000000, %fd17, %p9;
+
+$L__BB22_11:
+	cvta.to.global.u64 	%rd17, %rd6;
+	shl.b64 	%rd18, %rd1, 3;
+	add.s64 	%rd19, %rd17, %rd18;
+	st.global.f64 	[%rd19], %fd87;
+
+$L__BB22_12:
+	ret;
+
+}
+	// .globl	cudaverse_csr_spmm_f64
+.visible .entry cudaverse_csr_spmm_f64(
+	.param .u64 cudaverse_csr_spmm_f64_param_0,
+	.param .u64 cudaverse_csr_spmm_f64_param_1,
+	.param .u64 cudaverse_csr_spmm_f64_param_2,
+	.param .u64 cudaverse_csr_spmm_f64_param_3,
+	.param .u64 cudaverse_csr_spmm_f64_param_4,
+	.param .u32 cudaverse_csr_spmm_f64_param_5,
+	.param .u32 cudaverse_csr_spmm_f64_param_6,
+	.param .u32 cudaverse_csr_spmm_f64_param_7
+)
+{
+	.reg .pred 	%p<8>;
+	.reg .b32 	%r<32>;
+	.reg .f64 	%fd<30>;
+	.reg .b64 	%rd<77>;
+
+
+	ld.param.u64 	%rd25, [cudaverse_csr_spmm_f64_param_0];
+	ld.param.u64 	%rd27, [cudaverse_csr_spmm_f64_param_1];
+	ld.param.u64 	%rd28, [cudaverse_csr_spmm_f64_param_2];
+	ld.param.u64 	%rd29, [cudaverse_csr_spmm_f64_param_3];
+	ld.param.u64 	%rd26, [cudaverse_csr_spmm_f64_param_4];
+	ld.param.u32 	%r13, [cudaverse_csr_spmm_f64_param_5];
+	ld.param.u32 	%r12, [cudaverse_csr_spmm_f64_param_6];
+	ld.param.u32 	%r14, [cudaverse_csr_spmm_f64_param_7];
+	cvta.to.global.u64 	%rd1, %rd29;
+	cvta.to.global.u64 	%rd2, %rd28;
+	cvta.to.global.u64 	%rd3, %rd27;
+	mov.u32 	%r15, %ntid.x;
+	mov.u32 	%r16, %ctaid.x;
+	mov.u32 	%r17, %tid.x;
+	mad.lo.s32 	%r18, %r16, %r15, %r17;
+	cvt.u64.u32 	%rd4, %r18;
+	cvt.s64.s32 	%rd5, %r13;
+	mul.wide.s32 	%rd30, %r14, %r13;
+	setp.le.u64 	%p1, %rd30, %rd4;
+	@%p1 bra 	$L__BB23_12;
+
+	and.b64  	%rd31, %rd5, -4294967296;
+	setp.eq.s64 	%p2, %rd31, 0;
+	@%p2 bra 	$L__BB23_3;
+
+	div.u64 	%rd71, %rd4, %rd5;
+	mul.lo.s64 	%rd32, %rd71, %rd5;
+	sub.s64 	%rd72, %rd4, %rd32;
+	bra.uni 	$L__BB23_4;
+
+$L__BB23_3:
+	cvt.u32.u64 	%r19, %rd5;
+	cvt.u32.u64 	%r20, %rd4;
+	div.u32 	%r21, %r20, %r19;
+	mul.lo.s32 	%r22, %r21, %r19;
+	sub.s32 	%r23, %r20, %r22;
+	cvt.u64.u32 	%rd71, %r21;
+	cvt.u64.u32 	%rd72, %r23;
+
+$L__BB23_4:
+	cvta.to.global.u64 	%rd33, %rd25;
+	shl.b64 	%rd34, %rd72, 32;
+	shr.s64 	%rd35, %rd34, 30;
+	add.s64 	%rd36, %rd33, %rd35;
+	ld.global.u32 	%r1, [%rd36];
+	add.s64 	%rd37, %rd34, 4294967296;
+	shr.s64 	%rd38, %rd37, 30;
+	add.s64 	%rd39, %rd33, %rd38;
+	ld.global.u32 	%r2, [%rd39];
+	setp.ge.s32 	%p3, %r1, %r2;
+	mov.f64 	%fd29, 0d0000000000000000;
+	@%p3 bra 	$L__BB23_11;
+
+	cvt.s64.s32 	%rd40, %rd71;
+	cvt.s64.s32 	%rd41, %r12;
+	mul.lo.s64 	%rd12, %rd40, %rd41;
+	add.s32 	%r24, %r1, 1;
+	max.s32 	%r3, %r2, %r24;
+	sub.s32 	%r25, %r3, %r1;
+	and.b32  	%r29, %r25, 3;
+	setp.eq.s32 	%p4, %r29, 0;
+	mov.f64 	%fd29, 0d0000000000000000;
+	mov.u32 	%r30, %r1;
+	@%p4 bra 	$L__BB23_8;
+
+	mul.wide.s32 	%rd42, %r1, 8;
+	add.s64 	%rd74, %rd2, %rd42;
+	mul.wide.s32 	%rd43, %r1, 4;
+	add.s64 	%rd73, %rd3, %rd43;
+	mov.f64 	%fd29, 0d0000000000000000;
+	mov.u32 	%r30, %r1;
+
+$L__BB23_7:
+	.pragma "nounroll";
+	ld.global.s32 	%rd44, [%rd73];
+	add.s64 	%rd45, %rd12, %rd44;
+	shl.b64 	%rd46, %rd45, 3;
+	add.s64 	%rd47, %rd1, %rd46;
+	ld.global.f64 	%fd12, [%rd47];
+	ld.global.f64 	%fd13, [%rd74];
+	fma.rn.f64 	%fd29, %fd13, %fd12, %fd29;
+	add.s32 	%r30, %r30, 1;
+	add.s64 	%rd74, %rd74, 8;
+	add.s64 	%rd73, %rd73, 4;
+	add.s32 	%r29, %r29, -1;
+	setp.ne.s32 	%p5, %r29, 0;
+	@%p5 bra 	$L__BB23_7;
+
+$L__BB23_8:
+	not.b32 	%r26, %r1;
+	add.s32 	%r27, %r3, %r26;
+	setp.lt.u32 	%p6, %r27, 3;
+	@%p6 bra 	$L__BB23_11;
+
+	mul.wide.s32 	%rd48, %r30, 4;
+	add.s64 	%rd49, %rd3, %rd48;
+	add.s64 	%rd76, %rd49, 8;
+	mul.wide.s32 	%rd50, %r30, 8;
+	add.s64 	%rd51, %rd2, %rd50;
+	add.s64 	%rd75, %rd51, 16;
+
+$L__BB23_10:
+	ld.global.s32 	%rd52, [%rd76+-8];
+	add.s64 	%rd53, %rd12, %rd52;
+	shl.b64 	%rd54, %rd53, 3;
+	add.s64 	%rd55, %rd1, %rd54;
+	ld.global.f64 	%fd14, [%rd55];
+	ld.global.f64 	%fd15, [%rd75+-16];
+	fma.rn.f64 	%fd16, %fd15, %fd14, %fd29;
+	ld.global.s32 	%rd56, [%rd76+-4];
+	add.s64 	%rd57, %rd12, %rd56;
+	shl.b64 	%rd58, %rd57, 3;
+	add.s64 	%rd59, %rd1, %rd58;
+	ld.global.f64 	%fd17, [%rd59];
+	ld.global.f64 	%fd18, [%rd75+-8];
+	fma.rn.f64 	%fd19, %fd18, %fd17, %fd16;
+	ld.global.s32 	%rd60, [%rd76];
+	add.s64 	%rd61, %rd12, %rd60;
+	shl.b64 	%rd62, %rd61, 3;
+	add.s64 	%rd63, %rd1, %rd62;
+	ld.global.f64 	%fd20, [%rd63];
+	ld.global.f64 	%fd21, [%rd75];
+	fma.rn.f64 	%fd22, %fd21, %fd20, %fd19;
+	ld.global.s32 	%rd64, [%rd76+4];
+	add.s64 	%rd65, %rd12, %rd64;
+	shl.b64 	%rd66, %rd65, 3;
+	add.s64 	%rd67, %rd1, %rd66;
+	ld.global.f64 	%fd23, [%rd67];
+	ld.global.f64 	%fd24, [%rd75+8];
+	fma.rn.f64 	%fd29, %fd24, %fd23, %fd22;
+	add.s64 	%rd76, %rd76, 16;
+	add.s64 	%rd75, %rd75, 32;
+	add.s32 	%r30, %r30, 4;
+	setp.lt.s32 	%p7, %r30, %r2;
+	@%p7 bra 	$L__BB23_10;
+
+$L__BB23_11:
+	cvta.to.global.u64 	%rd68, %rd26;
+	shl.b64 	%rd69, %rd4, 3;
+	add.s64 	%rd70, %rd68, %rd69;
+	st.global.f64 	[%rd70], %fd29;
+
+$L__BB23_12:
+	ret;
+
+}
+	// .globl	cudaverse_csr_to_dense_f64
+.visible .entry cudaverse_csr_to_dense_f64(
+	.param .u64 cudaverse_csr_to_dense_f64_param_0,
+	.param .u64 cudaverse_csr_to_dense_f64_param_1,
+	.param .u64 cudaverse_csr_to_dense_f64_param_2,
+	.param .u64 cudaverse_csr_to_dense_f64_param_3,
+	.param .u32 cudaverse_csr_to_dense_f64_param_4,
+	.param .u32 cudaverse_csr_to_dense_f64_param_5
+)
+{
+	.reg .pred 	%p<2>;
+	.reg .b32 	%r<8>;
+	.reg .f64 	%fd<2>;
+	.reg .b64 	%rd<19>;
+
+
+	ld.param.u64 	%rd1, [cudaverse_csr_to_dense_f64_param_0];
+	ld.param.u64 	%rd2, [cudaverse_csr_to_dense_f64_param_1];
+	ld.param.u64 	%rd3, [cudaverse_csr_to_dense_f64_param_2];
+	ld.param.u64 	%rd4, [cudaverse_csr_to_dense_f64_param_3];
+	ld.param.u32 	%r2, [cudaverse_csr_to_dense_f64_param_4];
+	ld.param.u32 	%r3, [cudaverse_csr_to_dense_f64_param_5];
+	mov.u32 	%r4, %ctaid.x;
+	mov.u32 	%r5, %ntid.x;
+	mov.u32 	%r6, %tid.x;
+	mad.lo.s32 	%r1, %r4, %r5, %r6;
+	setp.ge.s32 	%p1, %r1, %r3;
+	@%p1 bra 	$L__BB24_2;
+
+	cvta.to.global.u64 	%rd5, %rd1;
+	mul.wide.s32 	%rd6, %r1, 4;
+	add.s64 	%rd7, %rd5, %rd6;
+	cvta.to.global.u64 	%rd8, %rd2;
+	add.s64 	%rd9, %rd8, %rd6;
+	cvta.to.global.u64 	%rd10, %rd3;
+	mul.wide.s32 	%rd11, %r1, 8;
+	add.s64 	%rd12, %rd10, %rd11;
+	ld.global.f64 	%fd1, [%rd12];
+	ld.global.s32 	%rd13, [%rd7];
+	ld.global.u32 	%r7, [%rd9];
+	mul.wide.s32 	%rd14, %r7, %r2;
+	add.s64 	%rd15, %rd14, %rd13;
+	cvta.to.global.u64 	%rd16, %rd4;
+	shl.b64 	%rd17, %rd15, 3;
+	add.s64 	%rd18, %rd16, %rd17;
+	st.global.f64 	[%rd18], %fd1;
+
+$L__BB24_2:
+	ret;
+
+}
 

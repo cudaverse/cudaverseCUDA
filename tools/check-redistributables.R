@@ -47,14 +47,14 @@ check_redistributables <- function(root) {
   }
   if (length(device_code) != 1L) {
     stop(
-      "Expected exactly one package-owned dense-kernel PTX; found ",
+      "Expected exactly one package-owned CUDA-kernel PTX; found ",
       length(device_code), ".",
       call. = FALSE
     )
   }
   message(paste(
     "Redistribution gate passed: no NVIDIA or LibTorch runtime binary is",
-    "bundled; only the package-owned, checksum-pinned dense-kernel PTX is present."
+    "bundled; only the package-owned, checksum-pinned CUDA-kernel PTX is present."
   ))
   invisible(TRUE)
 }
