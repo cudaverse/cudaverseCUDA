@@ -88,6 +88,42 @@ extern "C" __global__ void cudaverse_reduce_i32(
   }
 }
 
+extern "C" __global__ void cudaverse_cast_i32_f64(
+    const int* input, double* output, unsigned long long elements) {
+  unsigned long long index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < elements) output[index] = static_cast<double>(input[index]);
+}
+
+extern "C" __global__ void cudaverse_cast_f32_f64(
+    const float* input, double* output, unsigned long long elements) {
+  unsigned long long index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < elements) output[index] = static_cast<double>(input[index]);
+}
+
+extern "C" __global__ void cudaverse_cast_f64_f32(
+    const double* input, float* output, unsigned long long elements) {
+  unsigned long long index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < elements) output[index] = static_cast<float>(input[index]);
+}
+
+extern "C" __global__ void cudaverse_cast_i32_f32(
+    const int* input, float* output, unsigned long long elements) {
+  unsigned long long index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < elements) output[index] = static_cast<float>(input[index]);
+}
+
+extern "C" __global__ void cudaverse_cast_f64_i32(
+    const double* input, int* output, unsigned long long elements) {
+  unsigned long long index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < elements) output[index] = static_cast<int>(input[index]);
+}
+
+extern "C" __global__ void cudaverse_cast_f32_i32(
+    const float* input, int* output, unsigned long long elements) {
+  unsigned long long index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < elements) output[index] = static_cast<int>(input[index]);
+}
+
 extern "C" __global__ void cudaverse_column_stats_f64(
     const double* input, double* center, double* scale, int rows, int columns,
     int use_center, int use_scale) {

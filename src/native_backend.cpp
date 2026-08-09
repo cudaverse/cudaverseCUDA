@@ -12,6 +12,7 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
+#include <R_ext/Utils.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -25,6 +26,9 @@ using CUresult = int;
 using CUdevice = int;
 using CUcontext = void*;
 using CUdeviceptr = std::uint64_t;
+using CUmodule = void*;
+using CUfunction = void*;
+using CUstream = void*;
 using cublasHandle_t = void*;
 using cublasStatus_t = int;
 
@@ -46,6 +50,13 @@ using cuCtxSynchronize_t = CUresult (*)();
 using cuMemGetInfo_t = CUresult (*)(std::size_t*, std::size_t*);
 using cuGetErrorName_t = CUresult (*)(CUresult, const char**);
 using cuGetErrorString_t = CUresult (*)(CUresult, const char**);
+using cuModuleLoad_t = CUresult (*)(CUmodule*, const char*);
+using cuModuleUnload_t = CUresult (*)(CUmodule);
+using cuModuleGetFunction_t = CUresult (*)(CUfunction*, CUmodule, const char*);
+using cuLaunchKernel_t = CUresult (*)(
+    CUfunction, unsigned int, unsigned int, unsigned int,
+    unsigned int, unsigned int, unsigned int, unsigned int, CUstream,
+    void**, void**);
 
 using cublasCreate_t = cublasStatus_t (*)(cublasHandle_t*);
 using cublasDgemm_t = cublasStatus_t (*)(
@@ -56,6 +67,7 @@ struct BackendApi {
   void* driver = nullptr;
   void* cublas = nullptr;
   CUcontext context = nullptr;
+  CUmodule kernels = nullptr;
   cublasHandle_t cublas_handle = nullptr;
   int driver_version = 0;
   int device_count = 0;
@@ -74,6 +86,10 @@ struct BackendApi {
   cuMemGetInfo_t cuMemGetInfo = nullptr;
   cuGetErrorName_t cuGetErrorName = nullptr;
   cuGetErrorString_t cuGetErrorString = nullptr;
+  cuModuleLoad_t cuModuleLoad = nullptr;
+  cuModuleUnload_t cuModuleUnload = nullptr;
+  cuModuleGetFunction_t cuModuleGetFunction = nullptr;
+  cuLaunchKernel_t cuLaunchKernel = nullptr;
   cublasCreate_t cublasCreate = nullptr;
   cublasDgemm_t cublasDgemm = nullptr;
 };
@@ -81,6 +97,19 @@ struct BackendApi {
 BackendApi api;
 
 enum class DType { Float64, Float32, Integer };
+
+constexpr int CUDAVERSE_MAX_RANK = 8;
+
+struct ReductionMeta {
+  int rank;
+  int output_rank;
+  int keepdim;
+  int operation;
+  int shape[CUDAVERSE_MAX_RANK];
+  int reduced[CUDAVERSE_MAX_RANK];
+  int output_shape[CUDAVERSE_MAX_RANK];
+  int output_to_input[CUDAVERSE_MAX_RANK];
+};
 
 struct SharedBuffer {
   CUdeviceptr pointer;
@@ -183,7 +212,12 @@ bool load_driver(std::string& reason) {
       bind_symbol(api.cuCtxSynchronize, api.driver, "cuCtxSynchronize") &&
       bind_symbol(api.cuMemGetInfo, api.driver, "cuMemGetInfo_v2") &&
       bind_symbol(api.cuGetErrorName, api.driver, "cuGetErrorName") &&
-      bind_symbol(api.cuGetErrorString, api.driver, "cuGetErrorString");
+      bind_symbol(api.cuGetErrorString, api.driver, "cuGetErrorString") &&
+      bind_symbol(api.cuModuleLoad, api.driver, "cuModuleLoad") &&
+      bind_symbol(api.cuModuleUnload, api.driver, "cuModuleUnload") &&
+      bind_symbol(api.cuModuleGetFunction, api.driver,
+                  "cuModuleGetFunction") &&
+      bind_symbol(api.cuLaunchKernel, api.driver, "cuLaunchKernel");
   if (!bound) {
     reason = "The CUDA Driver library is missing required symbols.";
     return false;
@@ -277,6 +311,34 @@ void check_cublas(cublasStatus_t status, const char* operation) {
     std::string message = std::string(operation) + ": " + cublas_error(status);
     Rf_error("%s", message.c_str());
   }
+}
+
+void require_kernels() {
+  if (api.kernels == nullptr) {
+    Rf_error("The cudaverseCUDA PTX module has not been loaded.");
+  }
+}
+
+CUfunction get_kernel(const char* name) {
+  require_kernels();
+  CUfunction function = nullptr;
+  check_cuda(api.cuModuleGetFunction(&function, api.kernels, name),
+             "cuModuleGetFunction");
+  return function;
+}
+
+CUresult launch_1d(CUfunction function, std::size_t elements,
+                   void** parameters) {
+  if (elements == 0) return CUDA_SUCCESS;
+  constexpr unsigned int threads = 256;
+  unsigned long long blocks =
+      (static_cast<unsigned long long>(elements) + threads - 1) / threads;
+  if (blocks > std::numeric_limits<unsigned int>::max()) {
+    Rf_error("Native CUDA kernel launch is too large.");
+  }
+  return api.cuLaunchKernel(
+      function, static_cast<unsigned int>(blocks), 1, 1,
+      threads, 1, 1, 0, nullptr, parameters, nullptr);
 }
 
 SEXP buffer_tag() {
@@ -391,6 +453,19 @@ SEXP named_list(const std::vector<const char*>& names) {
 
 }  // namespace
 
+extern "C" SEXP C_cudaverse_cuda_load_kernels(SEXP path_sexp) {
+  if (TYPEOF(path_sexp) != STRSXP || XLENGTH(path_sexp) != 1 ||
+      STRING_ELT(path_sexp, 0) == NA_STRING) {
+    Rf_error("`path` must be one PTX file path.");
+  }
+  std::string reason;
+  if (!load_driver(reason)) Rf_error("%s", reason.c_str());
+  if (api.kernels != nullptr) return Rf_ScalarLogical(1);
+  const char* path = Rf_translateCharUTF8(STRING_ELT(path_sexp, 0));
+  check_cuda(api.cuModuleLoad(&api.kernels, path), "cuModuleLoad");
+  return Rf_ScalarLogical(1);
+}
+
 extern "C" SEXP C_cudaverse_cuda_diagnostics() {
   std::string reason;
   bool available = ensure_backend(reason);
@@ -484,6 +559,155 @@ extern "C" SEXP C_cudaverse_cuda_to_host(SEXP pointer) {
   return result;
 }
 
+extern "C" SEXP C_cudaverse_cuda_cast(SEXP pointer, SEXP dtype_sexp) {
+  require_backend();
+  require_kernels();
+  SharedBuffer* input = get_buffer(pointer);
+  DType target = parse_dtype(dtype_sexp);
+  if (input->dtype == target) return make_pointer(input, true);
+
+  const char* kernel = nullptr;
+  if (input->dtype == DType::Integer && target == DType::Float64) {
+    kernel = "cudaverse_cast_i32_f64";
+  } else if (input->dtype == DType::Float32 && target == DType::Float64) {
+    kernel = "cudaverse_cast_f32_f64";
+  } else if (input->dtype == DType::Float64 && target == DType::Float32) {
+    kernel = "cudaverse_cast_f64_f32";
+  } else if (input->dtype == DType::Integer && target == DType::Float32) {
+    kernel = "cudaverse_cast_i32_f32";
+  } else if (input->dtype == DType::Float64 && target == DType::Integer) {
+    kernel = "cudaverse_cast_f64_i32";
+  } else if (input->dtype == DType::Float32 && target == DType::Integer) {
+    kernel = "cudaverse_cast_f32_i32";
+  }
+  if (kernel == nullptr) Rf_error("Unsupported native CUDA cast.");
+
+  R_CheckUserInterrupt();
+  CUfunction function = get_kernel(kernel);
+  SharedBuffer* output = allocate_buffer(
+      target, input->shape, input->elements);
+  CUdeviceptr input_pointer = input->pointer;
+  CUdeviceptr output_pointer = output->pointer;
+  unsigned long long elements = input->elements;
+  void* parameters[] = {&input_pointer, &output_pointer, &elements};
+  CUresult status = launch_1d(function, input->elements, parameters);
+  if (status != CUDA_SUCCESS) {
+    api.cuMemFree(output->pointer);
+    delete output;
+    check_cuda(status, kernel);
+  }
+  return make_pointer(output, false);
+}
+
+extern "C" SEXP C_cudaverse_cuda_reduce(SEXP pointer, SEXP dim_sexp,
+                                           SEXP keepdim_sexp,
+                                           SEXP method_sexp) {
+  require_backend();
+  require_kernels();
+  SharedBuffer* input = get_buffer(pointer);
+  if (input->shape.size() > CUDAVERSE_MAX_RANK) {
+    Rf_error("Native CUDA reductions support at most %d dimensions.",
+             CUDAVERSE_MAX_RANK);
+  }
+  if (TYPEOF(dim_sexp) != INTSXP) {
+    Rf_error("`dim` must be an integer vector.");
+  }
+  if (TYPEOF(keepdim_sexp) != LGLSXP || XLENGTH(keepdim_sexp) != 1 ||
+      LOGICAL(keepdim_sexp)[0] == NA_LOGICAL) {
+    Rf_error("`keepdim` must be TRUE or FALSE.");
+  }
+  if (TYPEOF(method_sexp) != STRSXP || XLENGTH(method_sexp) != 1) {
+    Rf_error("`method` must be one character string.");
+  }
+  std::string method = CHAR(STRING_ELT(method_sexp, 0));
+  if (method != "sum" && method != "mean") {
+    Rf_error("Native CUDA reduction method must be `sum` or `mean`.");
+  }
+
+  ReductionMeta meta{};
+  meta.rank = static_cast<int>(input->shape.size());
+  meta.keepdim = LOGICAL(keepdim_sexp)[0] != 0;
+  meta.operation = method == "mean" ? 1 : 0;
+  for (int dimension = 0; dimension < meta.rank; ++dimension) {
+    meta.shape[dimension] = input->shape[dimension];
+  }
+  if (XLENGTH(dim_sexp) == 0) {
+    for (int dimension = 0; dimension < meta.rank; ++dimension) {
+      meta.reduced[dimension] = 1;
+    }
+  } else {
+    for (R_xlen_t index = 0; index < XLENGTH(dim_sexp); ++index) {
+      int dimension = INTEGER(dim_sexp)[index];
+      if (dimension < 1 || dimension > meta.rank) {
+        Rf_error("Native CUDA reduction dimension is out of range.");
+      }
+      meta.reduced[dimension - 1] = 1;
+    }
+  }
+
+  std::vector<int> output_shape;
+  if (meta.keepdim) {
+    for (int dimension = 0; dimension < meta.rank; ++dimension) {
+      int output_dimension = static_cast<int>(output_shape.size());
+      output_shape.push_back(meta.reduced[dimension]
+                                 ? 1
+                                 : input->shape[dimension]);
+      meta.output_to_input[output_dimension] =
+          meta.reduced[dimension] ? -1 : dimension;
+    }
+  } else {
+    for (int dimension = 0; dimension < meta.rank; ++dimension) {
+      if (!meta.reduced[dimension]) {
+        int output_dimension = static_cast<int>(output_shape.size());
+        output_shape.push_back(input->shape[dimension]);
+        meta.output_to_input[output_dimension] = dimension;
+      }
+    }
+    if (output_shape.empty()) {
+      output_shape.push_back(1);
+      meta.output_to_input[0] = -1;
+    }
+  }
+  meta.output_rank = static_cast<int>(output_shape.size());
+  std::size_t output_elements = 1;
+  for (int dimension = 0; dimension < meta.output_rank; ++dimension) {
+    meta.output_shape[dimension] = output_shape[dimension];
+    output_elements *= static_cast<std::size_t>(output_shape[dimension]);
+  }
+
+  const char* kernel = input->dtype == DType::Float64
+      ? "cudaverse_reduce_f64"
+      : (input->dtype == DType::Float32
+             ? "cudaverse_reduce_f32"
+             : "cudaverse_reduce_i32");
+  R_CheckUserInterrupt();
+  CUfunction function = get_kernel(kernel);
+  SharedBuffer* output = allocate_buffer(
+      input->dtype, output_shape, output_elements);
+  CUdeviceptr input_pointer = input->pointer;
+  CUdeviceptr output_pointer = output->pointer;
+  unsigned long long kernel_elements = output_elements;
+  void* parameters[] = {
+      &input_pointer, &output_pointer, &meta, &kernel_elements};
+  CUresult status = launch_1d(function, output_elements, parameters);
+  if (status != CUDA_SUCCESS) {
+    api.cuMemFree(output->pointer);
+    delete output;
+    check_cuda(status, kernel);
+  }
+
+  SEXP result = PROTECT(named_list({"storage", "shape"}));
+  SEXP result_pointer = PROTECT(make_pointer(output, false));
+  SEXP result_shape = PROTECT(Rf_allocVector(INTSXP, output_shape.size()));
+  for (std::size_t index = 0; index < output_shape.size(); ++index) {
+    INTEGER(result_shape)[index] = output_shape[index];
+  }
+  SET_VECTOR_ELT(result, 0, result_pointer);
+  SET_VECTOR_ELT(result, 1, result_shape);
+  UNPROTECT(3);
+  return result;
+}
+
 extern "C" SEXP C_cudaverse_cuda_matmul(SEXP left_pointer,
                                           SEXP right_pointer) {
   require_backend();
@@ -549,12 +773,18 @@ extern "C" SEXP C_cudaverse_cuda_memory_info() {
 }
 
 static const R_CallMethodDef call_methods[] = {
+    {"C_cudaverse_cuda_load_kernels",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_load_kernels), 1},
     {"C_cudaverse_cuda_diagnostics",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_diagnostics), 0},
     {"C_cudaverse_cuda_from_host",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_from_host), 3},
     {"C_cudaverse_cuda_to_host",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_to_host), 1},
+    {"C_cudaverse_cuda_cast",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_cast), 2},
+    {"C_cudaverse_cuda_reduce",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_reduce), 4},
     {"C_cudaverse_cuda_matmul",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_matmul), 2},
     {"C_cudaverse_cuda_synchronize",

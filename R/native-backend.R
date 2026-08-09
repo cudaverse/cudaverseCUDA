@@ -1,5 +1,45 @@
+.native_kernel_state <- new.env(parent = emptyenv())
+.native_kernel_state$loaded <- FALSE
+
+.native_kernel_path <- function() {
+  system.file(
+    "kernels",
+    "cudaverse_dense_kernels.ptx",
+    package = "cudaverseCUDA",
+    mustWork = FALSE
+  )
+}
+
+.native_ensure_kernels <- function() {
+  if (isTRUE(.native_kernel_state$loaded)) return(invisible(TRUE))
+  path <- .native_kernel_path()
+  if (!nzchar(path) || !file.exists(path)) {
+    stop(
+      "The CUDA 12.8.1 dense-kernel PTX artifact is missing.",
+      call. = FALSE
+    )
+  }
+  .Call(C_cudaverse_cuda_load_kernels, normalizePath(path, mustWork = TRUE))
+  .native_kernel_state$loaded <- TRUE
+  invisible(TRUE)
+}
+
 .native_diagnostics <- function() {
-  .Call(C_cudaverse_cuda_diagnostics)
+  diagnostics <- .Call(C_cudaverse_cuda_diagnostics)
+  kernel_error <- NULL
+  if (isTRUE(diagnostics$available)) {
+    tryCatch(
+      .native_ensure_kernels(),
+      error = function(error) kernel_error <<- conditionMessage(error)
+    )
+  }
+  diagnostics$kernels_loaded <- isTRUE(.native_kernel_state$loaded)
+  if (!is.null(kernel_error)) {
+    diagnostics$available <- FALSE
+    diagnostics$reason <- "kernel_unavailable"
+    diagnostics$detection_error <- kernel_error
+  }
+  diagnostics
 }
 
 .native_from_host <- function(x, dtype, shape, dimnames = NULL) {
@@ -13,6 +53,22 @@
 
 .native_to_host <- function(storage) {
   .Call(C_cudaverse_cuda_to_host, storage)
+}
+
+.native_cast <- function(storage, dtype) {
+  .native_ensure_kernels()
+  .Call(C_cudaverse_cuda_cast, storage, as.character(dtype))
+}
+
+.native_reduce <- function(storage, dim, keepdim, method) {
+  .native_ensure_kernels()
+  .Call(
+    C_cudaverse_cuda_reduce,
+    storage,
+    if (is.null(dim)) integer() else as.integer(dim),
+    as.logical(keepdim),
+    as.character(method)
+  )
 }
 
 .native_matmul <- function(x, y) {
@@ -67,13 +123,17 @@ cudaverse_cuda_backend_factory <- function() {
       "driver-detection",
       "allocation",
       "transfer",
+      "cast",
       "matmul",
+      "reduce",
       "synchronize",
       "shared-ownership"
     ),
     from_host = .native_from_host,
     to_host = .native_to_host,
+    cast = .native_cast,
     matmul = .native_matmul,
+    reduce = .native_reduce,
     synchronize = .native_synchronize,
     release = .native_release,
     error_translate = .native_error_translate

@@ -6,16 +6,55 @@ test_that("native diagnostics and factory follow the extension contract", {
     diagnostics,
     c(
       "installed", "available", "device_count", "version", "reason",
-      "detection_error", "driver_version", "cublas_loaded"
+      "detection_error", "driver_version", "cublas_loaded",
+      "kernels_loaded"
     )
   )
   expect_true(diagnostics$installed)
   expect_identical(factory$name, "native")
   expect_identical(factory$device, "cuda")
   expect_true(all(c(
-    "diagnostics", "capabilities", "from_host", "to_host", "matmul",
-    "synchronize", "release", "error_translate"
+    "diagnostics", "capabilities", "from_host", "to_host", "cast",
+    "matmul", "reduce", "synchronize", "release", "error_translate"
   ) %in% names(factory)))
+})
+
+test_that("native reductions match R across dimensions and dtypes", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  old <- options(cudaverse.cuda_backends = "native")
+  on.exit(options(old), add = TRUE)
+
+  values <- array(seq_len(24) / 7, dim = c(2, 3, 4))
+  tensor <- cudaverse::cuda_tensor(
+    values, device = "cuda", dtype = "float64"
+  )
+  expect_equal(
+    cudaverse::to_cpu(cudaverse::tensor_sum(tensor)),
+    array(sum(values), dim = 1L),
+    tolerance = 1e-10
+  )
+  expect_equal(
+    cudaverse::to_cpu(cudaverse::tensor_sum(tensor, dim = c(1, 3))),
+    array(apply(values, 2, sum), dim = 3L),
+    tolerance = 1e-10
+  )
+  expect_equal(
+    cudaverse::to_cpu(cudaverse::tensor_mean(tensor, dim = 2, keepdim = TRUE)),
+    array(apply(values, c(1, 3), mean), dim = c(2, 1, 4)),
+    tolerance = 1e-10
+  )
+
+  integer_tensor <- cudaverse::cuda_tensor(
+    array(1:12, c(3, 4)), device = "cuda", dtype = "integer"
+  )
+  integer_sum <- cudaverse::tensor_sum(integer_tensor, dim = 1)
+  expect_identical(integer_sum$dtype, "float64")
+  expect_equal(
+    cudaverse::to_cpu(integer_sum),
+    array(colSums(matrix(1:12, 3, 4)), dim = 4L),
+    tolerance = 0
+  )
 })
 test_that("native errors translate into structured cudaverse conditions", {
   factory <- cudaverse_cuda_backend_factory()
