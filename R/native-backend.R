@@ -71,6 +71,48 @@
   )
 }
 
+.native_algorithm_svd <- function(x, nu, nv) {
+  storage <- .native_from_host(x, "float64", dim(x))
+  on.exit(.native_release(storage), add = TRUE)
+  result <- .Call(
+    C_cudaverse_cuda_svd,
+    storage,
+    as.integer(nu),
+    as.integer(nv)
+  )
+  result$u <- matrix(result$u, nrow = nrow(x), ncol = nu)
+  result$v <- matrix(result$v, nrow = ncol(x), ncol = nv)
+  result
+}
+
+.native_algorithm_pca <- function(x, n_components, center, scale) {
+  storage <- .native_from_host(x, "float64", dim(x))
+  on.exit(.native_release(storage), add = TRUE)
+  result <- .Call(
+    C_cudaverse_cuda_pca,
+    storage,
+    as.integer(n_components),
+    as.logical(center),
+    as.logical(scale)
+  )
+  result$rotation <- matrix(
+    result$rotation,
+    nrow = ncol(x),
+    ncol = n_components
+  )
+  result$x <- matrix(result$x, nrow = nrow(x), ncol = n_components)
+  attr(result$x, "cudaverse_native_state") <- list(
+    storage = result$scores_storage,
+    shape = as.integer(c(nrow(x), n_components)),
+    dtype = "float64",
+    backend = "native"
+  )
+  result$scores_storage <- NULL
+  result$center <- if (isTRUE(center)) result$center else FALSE
+  result$scale <- if (isTRUE(scale)) result$scale else FALSE
+  result
+}
+
 .native_matmul <- function(x, y) {
   .Call(C_cudaverse_cuda_matmul, x, y)
 }
@@ -126,6 +168,8 @@ cudaverse_cuda_backend_factory <- function() {
       "cast",
       "matmul",
       "reduce",
+      "svd",
+      "pca",
       "synchronize",
       "shared-ownership"
     ),
@@ -134,6 +178,8 @@ cudaverse_cuda_backend_factory <- function() {
     cast = .native_cast,
     matmul = .native_matmul,
     reduce = .native_reduce,
+    algorithm_svd = .native_algorithm_svd,
+    algorithm_pca = .native_algorithm_pca,
     synchronize = .native_synchronize,
     release = .native_release,
     error_translate = .native_error_translate

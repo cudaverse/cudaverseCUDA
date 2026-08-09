@@ -56,6 +56,61 @@ test_that("native reductions match R across dimensions and dtypes", {
     tolerance = 0
   )
 })
+
+test_that("native cuSOLVER SVD matches reconstruction for tall and wide data", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  skip_if_not(nzchar(Sys.getenv("CUDAVERSE_CUSOLVER_PATH")))
+  old <- options(cudaverse.cuda_backends = "native")
+  on.exit(options(old), add = TRUE)
+
+  set.seed(20260809)
+  for (shape in list(c(12L, 5L), c(5L, 12L), c(5L, 1L))) {
+    values <- matrix(rnorm(prod(shape)), nrow = shape[[1L]])
+    actual <- cudaverse::cuda_svd(values, device = "cuda")
+    expected <- base::svd(values)
+    reconstruction <- actual$u %*% diag(actual$d, nrow = length(actual$d)) %*%
+      t(actual$v)
+
+    expect_equal(unname(actual$d), expected$d, tolerance = 1e-8)
+    expect_equal(reconstruction, values, tolerance = 1e-8)
+  }
+})
+
+test_that("native PCA matches R subspaces and retains device scores", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  skip_if_not(nzchar(Sys.getenv("CUDAVERSE_CUSOLVER_PATH")))
+  old <- options(cudaverse.cuda_backends = "native")
+  on.exit(options(old), add = TRUE)
+
+  set.seed(2718)
+  values <- matrix(rnorm(200), 40, 5)
+  for (center in c(FALSE, TRUE)) {
+    for (scale in c(FALSE, TRUE)) {
+      actual <- cudaverse::cuda_pca(
+        values, n_components = 3, center = center, scale. = scale,
+        device = "cuda"
+      )
+      expected <- stats::prcomp(
+        values, rank. = 3, center = center, scale. = scale
+      )
+      actual_reconstruction <- actual$x %*% t(actual$rotation)
+      expected_reconstruction <- expected$x[, 1:3, drop = FALSE] %*%
+        t(expected$rotation[, 1:3, drop = FALSE])
+
+      expect_equal(unname(actual$sdev), expected$sdev[1:3], tolerance = 1e-8)
+      expect_equal(actual_reconstruction, expected_reconstruction,
+                   tolerance = 1e-8)
+      expect_equal(actual$center, expected$center, tolerance = 1e-10)
+      expect_equal(actual$scale, expected$scale, tolerance = 1e-10)
+      state <- attr(actual$x, "cudaverse_native_state", exact = TRUE)
+      expect_identical(state$backend, "native")
+      expect_identical(state$shape, c(40L, 3L))
+      expect_type(state$storage, "externalptr")
+    }
+  }
+})
 test_that("native errors translate into structured cudaverse conditions", {
   factory <- cudaverse_cuda_backend_factory()
   raw <- simpleError("injected CUDA failure")

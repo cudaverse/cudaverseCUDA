@@ -1,8 +1,10 @@
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -31,9 +33,12 @@ using CUfunction = void*;
 using CUstream = void*;
 using cublasHandle_t = void*;
 using cublasStatus_t = int;
+using cusolverDnHandle_t = void*;
+using cusolverStatus_t = int;
 
 constexpr CUresult CUDA_SUCCESS = 0;
 constexpr cublasStatus_t CUBLAS_STATUS_SUCCESS = 0;
+constexpr cusolverStatus_t CUSOLVER_STATUS_SUCCESS = 0;
 constexpr int CUBLAS_OP_N = 0;
 
 using cuInit_t = CUresult (*)(unsigned int);
@@ -46,6 +51,7 @@ using cuMemAlloc_t = CUresult (*)(CUdeviceptr*, std::size_t);
 using cuMemFree_t = CUresult (*)(CUdeviceptr);
 using cuMemcpyHtoD_t = CUresult (*)(CUdeviceptr, const void*, std::size_t);
 using cuMemcpyDtoH_t = CUresult (*)(void*, CUdeviceptr, std::size_t);
+using cuMemcpyDtoD_t = CUresult (*)(CUdeviceptr, CUdeviceptr, std::size_t);
 using cuCtxSynchronize_t = CUresult (*)();
 using cuMemGetInfo_t = CUresult (*)(std::size_t*, std::size_t*);
 using cuGetErrorName_t = CUresult (*)(CUresult, const char**);
@@ -62,13 +68,21 @@ using cublasCreate_t = cublasStatus_t (*)(cublasHandle_t*);
 using cublasDgemm_t = cublasStatus_t (*)(
     cublasHandle_t, int, int, int, int, int, const double*,
     const double*, int, const double*, int, const double*, double*, int);
+using cusolverDnCreate_t = cusolverStatus_t (*)(cusolverDnHandle_t*);
+using cusolverDnDgesvd_bufferSize_t = cusolverStatus_t (*)(
+    cusolverDnHandle_t, int, int, int*);
+using cusolverDnDgesvd_t = cusolverStatus_t (*)(
+    cusolverDnHandle_t, signed char, signed char, int, int, double*, int,
+    double*, double*, int, double*, int, double*, int, double*, int*);
 
 struct BackendApi {
   void* driver = nullptr;
   void* cublas = nullptr;
+  void* cusolver = nullptr;
   CUcontext context = nullptr;
   CUmodule kernels = nullptr;
   cublasHandle_t cublas_handle = nullptr;
+  cusolverDnHandle_t cusolver_handle = nullptr;
   int driver_version = 0;
   int device_count = 0;
 
@@ -82,6 +96,7 @@ struct BackendApi {
   cuMemFree_t cuMemFree = nullptr;
   cuMemcpyHtoD_t cuMemcpyHtoD = nullptr;
   cuMemcpyDtoH_t cuMemcpyDtoH = nullptr;
+  cuMemcpyDtoD_t cuMemcpyDtoD = nullptr;
   cuCtxSynchronize_t cuCtxSynchronize = nullptr;
   cuMemGetInfo_t cuMemGetInfo = nullptr;
   cuGetErrorName_t cuGetErrorName = nullptr;
@@ -92,6 +107,9 @@ struct BackendApi {
   cuLaunchKernel_t cuLaunchKernel = nullptr;
   cublasCreate_t cublasCreate = nullptr;
   cublasDgemm_t cublasDgemm = nullptr;
+  cusolverDnCreate_t cusolverDnCreate = nullptr;
+  cusolverDnDgesvd_bufferSize_t cusolverDnDgesvd_bufferSize = nullptr;
+  cusolverDnDgesvd_t cusolverDnDgesvd = nullptr;
 };
 
 BackendApi api;
@@ -180,6 +198,10 @@ std::string cublas_error(cublasStatus_t status) {
   return "cuBLAS error " + std::to_string(status);
 }
 
+std::string cusolver_error(cusolverStatus_t status) {
+  return "cuSOLVER error " + std::to_string(status);
+}
+
 bool load_driver(std::string& reason) {
 #ifdef __APPLE__
   reason = "Native CUDA is not supported on macOS.";
@@ -209,6 +231,7 @@ bool load_driver(std::string& reason) {
       bind_symbol(api.cuMemFree, api.driver, "cuMemFree_v2") &&
       bind_symbol(api.cuMemcpyHtoD, api.driver, "cuMemcpyHtoD_v2") &&
       bind_symbol(api.cuMemcpyDtoH, api.driver, "cuMemcpyDtoH_v2") &&
+      bind_symbol(api.cuMemcpyDtoD, api.driver, "cuMemcpyDtoD_v2") &&
       bind_symbol(api.cuCtxSynchronize, api.driver, "cuCtxSynchronize") &&
       bind_symbol(api.cuMemGetInfo, api.driver, "cuMemGetInfo_v2") &&
       bind_symbol(api.cuGetErrorName, api.driver, "cuGetErrorName") &&
@@ -311,6 +334,46 @@ void check_cublas(cublasStatus_t status, const char* operation) {
     std::string message = std::string(operation) + ": " + cublas_error(status);
     Rf_error("%s", message.c_str());
   }
+}
+
+bool load_cusolver(std::string& reason) {
+  if (!load_driver(reason)) return false;
+  if (api.cusolver == nullptr) {
+#ifdef _WIN32
+    api.cusolver = open_library(
+        "CUDAVERSE_CUSOLVER_PATH", {"cusolver64_11.dll"});
+#elif defined(__APPLE__)
+    reason = "Native CUDA is not supported on macOS.";
+    return false;
+#else
+    api.cusolver = open_library(
+        "CUDAVERSE_CUSOLVER_PATH",
+        {"libcusolver.so.11", "libcusolver.so"});
+#endif
+  }
+  if (api.cusolver == nullptr) {
+    reason = "The NVIDIA cuSOLVER 11 library could not be loaded.";
+    return false;
+  }
+  bool bound =
+      bind_symbol(api.cusolverDnCreate, api.cusolver,
+                  "cusolverDnCreate") &&
+      bind_symbol(api.cusolverDnDgesvd_bufferSize, api.cusolver,
+                  "cusolverDnDgesvd_bufferSize") &&
+      bind_symbol(api.cusolverDnDgesvd, api.cusolver,
+                  "cusolverDnDgesvd");
+  if (!bound) {
+    reason = "The cuSOLVER library is missing required SVD symbols.";
+    return false;
+  }
+  if (api.cusolver_handle == nullptr) {
+    cusolverStatus_t status = api.cusolverDnCreate(&api.cusolver_handle);
+    if (status != CUSOLVER_STATUS_SUCCESS) {
+      reason = cusolver_error(status);
+      return false;
+    }
+  }
+  return true;
 }
 
 void require_kernels() {
@@ -434,6 +497,201 @@ SharedBuffer* allocate_buffer(DType dtype, const std::vector<int>& shape,
     check_cuda(status, "cuMemAlloc");
   }
   return buffer;
+}
+
+class DeviceMemory {
+ public:
+  DeviceMemory() = default;
+  explicit DeviceMemory(std::size_t bytes) : bytes_(bytes) {
+    if (bytes_ == 0) return;
+    CUresult status = api.cuMemAlloc(&pointer_, bytes_);
+    if (status != CUDA_SUCCESS) {
+      throw std::runtime_error("cuMemAlloc: " + cuda_error(status));
+    }
+  }
+  ~DeviceMemory() {
+    if (pointer_ != 0 && api.cuMemFree != nullptr) api.cuMemFree(pointer_);
+  }
+  DeviceMemory(const DeviceMemory&) = delete;
+  DeviceMemory& operator=(const DeviceMemory&) = delete;
+  DeviceMemory(DeviceMemory&& other) noexcept
+      : pointer_(other.pointer_), bytes_(other.bytes_) {
+    other.pointer_ = 0;
+    other.bytes_ = 0;
+  }
+  DeviceMemory& operator=(DeviceMemory&& other) noexcept {
+    if (this != &other) {
+      if (pointer_ != 0 && api.cuMemFree != nullptr) api.cuMemFree(pointer_);
+      pointer_ = other.pointer_;
+      bytes_ = other.bytes_;
+      other.pointer_ = 0;
+      other.bytes_ = 0;
+    }
+    return *this;
+  }
+  CUdeviceptr pointer() const { return pointer_; }
+  std::size_t bytes() const { return bytes_; }
+  CUdeviceptr release() {
+    CUdeviceptr result = pointer_;
+    pointer_ = 0;
+    bytes_ = 0;
+    return result;
+  }
+
+ private:
+  CUdeviceptr pointer_ = 0;
+  std::size_t bytes_ = 0;
+};
+
+void cuda_or_throw(CUresult status, const char* operation) {
+  if (status != CUDA_SUCCESS) {
+    throw std::runtime_error(
+        std::string(operation) + ": " + cuda_error(status));
+  }
+}
+
+void cusolver_or_throw(cusolverStatus_t status, const char* operation) {
+  if (status != CUSOLVER_STATUS_SUCCESS) {
+    throw std::runtime_error(
+        std::string(operation) + ": " + cusolver_error(status));
+  }
+}
+
+void launch_or_throw(CUfunction function, const char* name,
+                     std::size_t elements, void** parameters) {
+  cuda_or_throw(launch_1d(function, elements, parameters), name);
+}
+
+struct DeviceSvd {
+  int rank = 0;
+  DeviceMemory values;
+  DeviceMemory left;
+  DeviceMemory right;
+};
+
+DeviceSvd run_device_svd(CUdeviceptr input, int rows, int columns) {
+  std::string reason;
+  if (!load_cusolver(reason)) throw std::runtime_error(reason);
+  require_kernels();
+  CUfunction transpose = get_kernel("cudaverse_transpose_f64");
+
+  bool transposed = rows < columns;
+  int solver_rows = transposed ? columns : rows;
+  int solver_columns = transposed ? rows : columns;
+  int rank = solver_columns;
+  std::size_t matrix_elements =
+      static_cast<std::size_t>(rows) * columns;
+  DeviceMemory matrix(matrix_elements * sizeof(double));
+  if (transposed) {
+    CUdeviceptr output = matrix.pointer();
+    void* parameters[] = {&input, &output, &rows, &columns};
+    launch_or_throw(transpose, "cudaverse_transpose_f64",
+                    matrix_elements, parameters);
+  } else {
+    cuda_or_throw(api.cuMemcpyDtoD(
+                      matrix.pointer(), input,
+                      matrix_elements * sizeof(double)),
+                  "cuMemcpyDtoD");
+  }
+
+  int workspace_elements = 0;
+  cusolver_or_throw(
+      api.cusolverDnDgesvd_bufferSize(
+          api.cusolver_handle, solver_rows, solver_columns,
+          &workspace_elements),
+      "cusolverDnDgesvd_bufferSize");
+  if (workspace_elements < 1) {
+    throw std::runtime_error("cuSOLVER returned an invalid SVD workspace.");
+  }
+
+  DeviceMemory singular_values(static_cast<std::size_t>(rank) *
+                               sizeof(double));
+  DeviceMemory solver_left(
+      static_cast<std::size_t>(solver_rows) * rank * sizeof(double));
+  DeviceMemory solver_right_transposed(
+      static_cast<std::size_t>(rank) * solver_columns * sizeof(double));
+  DeviceMemory workspace(
+      static_cast<std::size_t>(workspace_elements) * sizeof(double));
+  DeviceMemory rwork(
+      static_cast<std::size_t>(rank > 1 ? rank - 1 : 1) * sizeof(double));
+  DeviceMemory device_info(sizeof(int));
+
+  cusolver_or_throw(
+      api.cusolverDnDgesvd(
+          api.cusolver_handle, static_cast<signed char>('S'),
+          static_cast<signed char>('S'), solver_rows, solver_columns,
+          reinterpret_cast<double*>(matrix.pointer()), solver_rows,
+          reinterpret_cast<double*>(singular_values.pointer()),
+          reinterpret_cast<double*>(solver_left.pointer()), solver_rows,
+          reinterpret_cast<double*>(solver_right_transposed.pointer()), rank,
+          reinterpret_cast<double*>(workspace.pointer()), workspace_elements,
+          reinterpret_cast<double*>(rwork.pointer()),
+          reinterpret_cast<int*>(device_info.pointer())),
+      "cusolverDnDgesvd");
+  int info = 0;
+  cuda_or_throw(api.cuMemcpyDtoH(&info, device_info.pointer(), sizeof(int)),
+                "cuMemcpyDtoH(SVD info)");
+  if (info != 0) {
+    throw std::runtime_error(
+        "cuSOLVER SVD failed to converge (info=" +
+        std::to_string(info) + ").");
+  }
+
+  DeviceMemory original_left;
+  DeviceMemory original_right;
+  if (!transposed) {
+    original_left = std::move(solver_left);
+    original_right = DeviceMemory(
+        static_cast<std::size_t>(columns) * rank * sizeof(double));
+    CUdeviceptr source = solver_right_transposed.pointer();
+    CUdeviceptr destination = original_right.pointer();
+    int transpose_rows = rank;
+    int transpose_columns = columns;
+    void* parameters[] = {
+        &source, &destination, &transpose_rows, &transpose_columns};
+    launch_or_throw(
+        transpose, "cudaverse_transpose_f64",
+        static_cast<std::size_t>(rank) * columns, parameters);
+  } else {
+    original_right = std::move(solver_left);
+    original_left = DeviceMemory(
+        static_cast<std::size_t>(rows) * rank * sizeof(double));
+    CUdeviceptr source = solver_right_transposed.pointer();
+    CUdeviceptr destination = original_left.pointer();
+    int transpose_rows = rank;
+    int transpose_columns = rows;
+    void* parameters[] = {
+        &source, &destination, &transpose_rows, &transpose_columns};
+    launch_or_throw(
+        transpose, "cudaverse_transpose_f64",
+        static_cast<std::size_t>(rank) * rows, parameters);
+  }
+
+  DeviceSvd result;
+  result.rank = rank;
+  result.values = std::move(singular_values);
+  result.left = std::move(original_left);
+  result.right = std::move(original_right);
+  return result;
+}
+
+std::vector<double> copy_double_to_host(CUdeviceptr pointer,
+                                        std::size_t elements,
+                                        const char* operation) {
+  std::vector<double> result(elements);
+  cuda_or_throw(api.cuMemcpyDtoH(
+                    result.data(), pointer, elements * sizeof(double)),
+                operation);
+  return result;
+}
+
+SEXP numeric_vector(const std::vector<double>& values) {
+  SEXP result = PROTECT(Rf_allocVector(REALSXP, values.size()));
+  if (!values.empty()) {
+    std::memcpy(REAL(result), values.data(), values.size() * sizeof(double));
+  }
+  UNPROTECT(1);
+  return result;
 }
 
 SEXP scalar_string_or_na(const std::string& value) {
@@ -708,6 +966,169 @@ extern "C" SEXP C_cudaverse_cuda_reduce(SEXP pointer, SEXP dim_sexp,
   return result;
 }
 
+extern "C" SEXP C_cudaverse_cuda_svd(SEXP pointer, SEXP nu_sexp,
+                                        SEXP nv_sexp) {
+  SharedBuffer* input = get_buffer(pointer);
+  if (input->dtype != DType::Float64 || input->shape.size() != 2) {
+    Rf_error("Native CUDA SVD requires one float64 matrix.");
+  }
+  int rows = input->shape[0];
+  int columns = input->shape[1];
+  int rank = rows < columns ? rows : columns;
+  int nu = Rf_asInteger(nu_sexp);
+  int nv = Rf_asInteger(nv_sexp);
+  if (nu == NA_INTEGER || nv == NA_INTEGER ||
+      nu < 0 || nu > rank || nv < 0 || nv > rank) {
+    Rf_error("Native CUDA SVD vector counts are out of range.");
+  }
+  R_CheckUserInterrupt();
+  try {
+    DeviceSvd decomposition = run_device_svd(input->pointer, rows, columns);
+    std::vector<double> values = copy_double_to_host(
+        decomposition.values.pointer(), decomposition.rank,
+        "cuMemcpyDtoH(SVD values)");
+    std::vector<double> left = copy_double_to_host(
+        decomposition.left.pointer(), static_cast<std::size_t>(rows) * nu,
+        "cuMemcpyDtoH(SVD left vectors)");
+    std::vector<double> right = copy_double_to_host(
+        decomposition.right.pointer(), static_cast<std::size_t>(columns) * nv,
+        "cuMemcpyDtoH(SVD right vectors)");
+
+    SEXP result = PROTECT(named_list({"d", "u", "v"}));
+    SEXP d = PROTECT(numeric_vector(values));
+    SEXP u = PROTECT(numeric_vector(left));
+    SEXP v = PROTECT(numeric_vector(right));
+    SET_VECTOR_ELT(result, 0, d);
+    SET_VECTOR_ELT(result, 1, u);
+    SET_VECTOR_ELT(result, 2, v);
+    UNPROTECT(4);
+    return result;
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
+}
+
+extern "C" SEXP C_cudaverse_cuda_pca(SEXP pointer,
+                                        SEXP components_sexp,
+                                        SEXP center_sexp,
+                                        SEXP scale_sexp) {
+  SharedBuffer* input = get_buffer(pointer);
+  if (input->dtype != DType::Float64 || input->shape.size() != 2) {
+    Rf_error("Native CUDA PCA requires one float64 matrix.");
+  }
+  int rows = input->shape[0];
+  int columns = input->shape[1];
+  int components = Rf_asInteger(components_sexp);
+  int max_components = (rows - 1) < columns ? (rows - 1) : columns;
+  if (components == NA_INTEGER || components < 1 ||
+      components > max_components) {
+    Rf_error("Native CUDA PCA component count is out of range.");
+  }
+  int use_center = Rf_asLogical(center_sexp);
+  int use_scale = Rf_asLogical(scale_sexp);
+  if (use_center == NA_LOGICAL || use_scale == NA_LOGICAL) {
+    Rf_error("Native CUDA PCA flags must be TRUE or FALSE.");
+  }
+  R_CheckUserInterrupt();
+  try {
+    std::string reason;
+    if (!load_cusolver(reason)) throw std::runtime_error(reason);
+    require_kernels();
+    CUfunction statistics = get_kernel("cudaverse_column_stats_f64");
+    CUfunction transform = get_kernel("cudaverse_center_scale_f64");
+    CUfunction scale_columns = get_kernel("cudaverse_scale_columns_f64");
+
+    DeviceMemory centers(static_cast<std::size_t>(columns) * sizeof(double));
+    DeviceMemory scales(static_cast<std::size_t>(columns) * sizeof(double));
+    DeviceMemory transformed(
+        static_cast<std::size_t>(rows) * columns * sizeof(double));
+    CUdeviceptr input_pointer = input->pointer;
+    CUdeviceptr center_pointer = centers.pointer();
+    CUdeviceptr scale_pointer = scales.pointer();
+    void* statistics_parameters[] = {
+        &input_pointer, &center_pointer, &scale_pointer, &rows, &columns,
+        &use_center, &use_scale};
+    launch_or_throw(statistics, "cudaverse_column_stats_f64", columns,
+                    statistics_parameters);
+
+    std::vector<double> host_centers = copy_double_to_host(
+        centers.pointer(), columns, "cuMemcpyDtoH(PCA center)");
+    std::vector<double> host_scales = copy_double_to_host(
+        scales.pointer(), columns, "cuMemcpyDtoH(PCA scale)");
+    if (use_scale) {
+      for (double value : host_scales) {
+        if (!std::isfinite(value) || value <= 0.0) {
+          throw std::runtime_error(
+              "Cannot scale constant or non-finite features.");
+        }
+      }
+    }
+
+    CUdeviceptr transformed_pointer = transformed.pointer();
+    void* transform_parameters[] = {
+        &input_pointer, &transformed_pointer, &center_pointer,
+        &scale_pointer, &rows, &columns};
+    launch_or_throw(
+        transform, "cudaverse_center_scale_f64",
+        static_cast<std::size_t>(rows) * columns, transform_parameters);
+
+    DeviceSvd decomposition = run_device_svd(
+        transformed.pointer(), rows, columns);
+    DeviceMemory scores(
+        static_cast<std::size_t>(rows) * components * sizeof(double));
+    CUdeviceptr left_pointer = decomposition.left.pointer();
+    CUdeviceptr scores_pointer = scores.pointer();
+    CUdeviceptr singular_pointer = decomposition.values.pointer();
+    void* score_parameters[] = {
+        &left_pointer, &scores_pointer, &singular_pointer,
+        &rows, &components};
+    launch_or_throw(
+        scale_columns, "cudaverse_scale_columns_f64",
+        static_cast<std::size_t>(rows) * components, score_parameters);
+
+    std::vector<double> host_singular = copy_double_to_host(
+        decomposition.values.pointer(), components,
+        "cuMemcpyDtoH(PCA singular values)");
+    std::vector<double> host_rotation = copy_double_to_host(
+        decomposition.right.pointer(),
+        static_cast<std::size_t>(columns) * components,
+        "cuMemcpyDtoH(PCA rotation)");
+    std::vector<double> host_scores = copy_double_to_host(
+        scores.pointer(), static_cast<std::size_t>(rows) * components,
+        "cuMemcpyDtoH(PCA scores)");
+    double denominator = std::sqrt(static_cast<double>(rows - 1));
+    for (double& value : host_singular) value /= denominator;
+
+    auto* score_buffer = new SharedBuffer{
+        scores.release(),
+        static_cast<std::size_t>(rows) * components * sizeof(double),
+        static_cast<std::size_t>(rows) * components,
+        DType::Float64,
+        {rows, components},
+        1};
+    SEXP score_storage = PROTECT(make_pointer(score_buffer, false));
+    SEXP result = PROTECT(named_list({
+        "sdev", "rotation", "x", "center", "scale", "scores_storage"}));
+    SEXP sdev = PROTECT(numeric_vector(host_singular));
+    SEXP rotation = PROTECT(numeric_vector(host_rotation));
+    SEXP host_x = PROTECT(numeric_vector(host_scores));
+    SEXP host_center = PROTECT(numeric_vector(host_centers));
+    SEXP host_scale = PROTECT(numeric_vector(host_scales));
+    SET_VECTOR_ELT(result, 0, sdev);
+    SET_VECTOR_ELT(result, 1, rotation);
+    SET_VECTOR_ELT(result, 2, host_x);
+    SET_VECTOR_ELT(result, 3, host_center);
+    SET_VECTOR_ELT(result, 4, host_scale);
+    SET_VECTOR_ELT(result, 5, score_storage);
+    UNPROTECT(7);
+    return result;
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
+}
+
 extern "C" SEXP C_cudaverse_cuda_matmul(SEXP left_pointer,
                                           SEXP right_pointer) {
   require_backend();
@@ -785,6 +1206,10 @@ static const R_CallMethodDef call_methods[] = {
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_cast), 2},
     {"C_cudaverse_cuda_reduce",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_reduce), 4},
+    {"C_cudaverse_cuda_svd",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_svd), 3},
+    {"C_cudaverse_cuda_pca",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_pca), 4},
     {"C_cudaverse_cuda_matmul",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_matmul), 2},
     {"C_cudaverse_cuda_synchronize",
