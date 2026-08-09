@@ -63,6 +63,6 @@ Largest benchmark: `10000x128@0.01`.
 - CUDA 12.8.1 CI builds the package-owned PTX artifact; runtime libraries are discovered dynamically.
 - The SBOM and redistributable-license gate remain part of CI.
 
-Report JSON SHA-256: `753f71af9b249a606bca3b3ed76663f4cd7e9c2bb8a76af1520ac1bf3ad77f9b`.
+Canonical-LF report JSON SHA-256: `e0d7f1120c21323d6e94ca7930a797f42ab7730fc254897eb2a2c3a4da67f43a`.
 
 The complete raw timings, numerical errors, memory snapshots, diagnostics, and validation evidence are retained in `phase3-rtx2000.json`.

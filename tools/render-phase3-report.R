@@ -115,8 +115,14 @@ pca_stages <- paste(
 knn_stages <- paste(
   characters(native_provenance$knn$stages$stage), collapse = " -> "
 )
+json_bytes <- readChar(
+  input,
+  nchars = file.info(input)$size,
+  useBytes = TRUE
+)
+json_bytes <- gsub("\r\n", "\n", json_bytes, fixed = TRUE)
 json_sha <- digest::digest(
-  input, algo = "sha256", file = TRUE, serialize = FALSE
+  charToRaw(json_bytes), algo = "sha256", serialize = FALSE
 )
 
 lines <- c(
@@ -211,7 +217,7 @@ lines <- c(
   "- CUDA 12.8.1 CI builds the package-owned PTX artifact; runtime libraries are discovered dynamically.",
   "- The SBOM and redistributable-license gate remain part of CI.",
   "",
-  paste0("Report JSON SHA-256: `", json_sha, "`."),
+  paste0("Canonical-LF report JSON SHA-256: `", json_sha, "`."),
   "",
   "The complete raw timings, numerical errors, memory snapshots, diagnostics, and validation evidence are retained in `phase3-rtx2000.json`."
 )
