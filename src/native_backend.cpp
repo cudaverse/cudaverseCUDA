@@ -1211,6 +1211,34 @@ extern "C" SEXP C_cudaverse_cuda_row_norms(SEXP pointer) {
   return R_NilValue;
 }
 
+extern "C" SEXP C_cudaverse_cuda_normalize_rows(SEXP pointer) {
+  require_backend();
+  require_kernels();
+  SharedBuffer* input = get_buffer(pointer);
+  if (input->dtype != DType::Float64 || input->shape.size() != 2) {
+    Rf_error("Native CUDA row normalization requires one float64 matrix.");
+  }
+  try {
+    CUfunction normalize = get_kernel("cudaverse_normalize_rows_f64");
+    DeviceMemory output(input->bytes);
+    CUdeviceptr input_pointer = input->pointer;
+    CUdeviceptr output_pointer = output.pointer();
+    int rows = input->shape[0];
+    int columns = input->shape[1];
+    void* parameters[] = {
+        &input_pointer, &output_pointer, &rows, &columns};
+    launch_or_throw(normalize, "cudaverse_normalize_rows_f64", rows,
+                    parameters);
+    auto* result = new SharedBuffer{
+        output.release(), input->bytes, input->elements, DType::Float64,
+        input->shape, 1};
+    return make_pointer(result, false);
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
+}
+
 extern "C" SEXP C_cudaverse_cuda_distance(SEXP query_pointer,
                                              SEXP reference_pointer,
                                              SEXP metric_sexp,
@@ -1428,6 +1456,8 @@ static const R_CallMethodDef call_methods[] = {
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_pca), 4},
     {"C_cudaverse_cuda_row_norms",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_row_norms), 1},
+    {"C_cudaverse_cuda_normalize_rows",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_normalize_rows), 1},
     {"C_cudaverse_cuda_distance",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_distance), 4},
     {"C_cudaverse_cuda_knn_block",

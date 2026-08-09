@@ -72,6 +72,7 @@
 }
 
 .native_algorithm_svd <- function(x, nu, nv) {
+  .native_ensure_kernels()
   storage <- .native_from_host(x, "float64", dim(x))
   on.exit(.native_release(storage), add = TRUE)
   result <- .Call(
@@ -86,6 +87,7 @@
 }
 
 .native_algorithm_pca <- function(x, n_components, center, scale) {
+  .native_ensure_kernels()
   storage <- .native_from_host(x, "float64", dim(x))
   on.exit(.native_release(storage), add = TRUE)
   result <- .Call(
@@ -125,11 +127,32 @@
   .native_from_host(values, "float64", dim(values))
 }
 
-.native_algorithm_distance <- function(x, y, metric) {
-  self <- identical(x, y)
-  x_storage <- .native_matrix_storage(x)
+.native_distance_storage <- function(values, source_values, metric) {
+  source_state <- attr(
+    source_values, "cudaverse_native_state", exact = TRUE
+  )
+  resident_source <- is.list(source_state) &&
+    identical(source_state$backend, "native") &&
+    typeof(source_state$storage) == "externalptr"
+  if (identical(metric, "cosine") && resident_source) {
+    raw <- .native_matrix_storage(source_values)
+    on.exit(.native_release(raw), add = TRUE)
+    return(.Call(C_cudaverse_cuda_normalize_rows, raw))
+  }
+  .native_matrix_storage(values)
+}
+
+.native_algorithm_distance <- function(x, y, metric,
+                                       source_x = x, source_y = y) {
+  .native_ensure_kernels()
+  self <- identical(source_x, source_y)
+  x_storage <- .native_distance_storage(x, source_x, metric)
   on.exit(.native_release(x_storage), add = TRUE)
-  y_storage <- if (self) x_storage else .native_matrix_storage(y)
+  y_storage <- if (self) {
+    x_storage
+  } else {
+    .native_distance_storage(y, source_y, metric)
+  }
   if (!self) on.exit(.native_release(y_storage), add = TRUE)
   distance_storage <- .Call(
     C_cudaverse_cuda_distance,
@@ -146,8 +169,10 @@
   )
 }
 
-.native_knn_prepare <- function(values) {
-  storage <- .native_matrix_storage(values)
+.native_knn_prepare <- function(values, metric = "euclidean",
+                                source_values = values) {
+  .native_ensure_kernels()
+  storage <- .native_distance_storage(values, source_values, metric)
   norms <- .Call(C_cudaverse_cuda_row_norms, storage)
   list(
     storage = storage,

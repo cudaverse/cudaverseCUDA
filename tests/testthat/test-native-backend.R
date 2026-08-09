@@ -151,6 +151,18 @@ test_that("native distances and stable device top-k match CPU ordering", {
   )
   expect_identical(native_cosine$index, cpu_cosine$index)
   expect_equal(native_cosine$distance, cpu_cosine$distance, tolerance = 1e-10)
+
+  set.seed(33)
+  general_values <- matrix(rnorm(135), 45, 3)
+  general_state <- factory$algorithm_knn_prepare(general_values)
+  native_general <- factory$algorithm_knn_select(
+    general_state, general_values, 40L, "euclidean", 11L
+  )
+  cpu_general <- cudaverse::cuda_knn(
+    general_values, k = 40, device = "cpu", batch_size = 11
+  )
+  expect_identical(native_general$index, cpu_general$index)
+  expect_equal(native_general$distance, cpu_general$distance, tolerance = 1e-10)
 })
 test_that("native errors translate into structured cudaverse conditions", {
   factory <- cudaverse_cuda_backend_factory()
