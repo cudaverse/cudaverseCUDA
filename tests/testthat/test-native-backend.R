@@ -313,6 +313,28 @@ test_that("shared native ownership frees an allocation exactly once", {
   expect_error(factory$to_host(shared), "released")
 })
 
+test_that("operation-owned allocation telemetry reports a high-water mark", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  factory <- cudaverse_cuda_backend_factory()
+  gc()
+  baseline <- cudaverseCUDA:::.native_memory_tracker(reset = TRUE)$current
+
+  first <- factory$from_host(double(128), "float64", 128L)
+  second <- factory$from_host(double(256), "float64", 256L)
+  during <- cudaverseCUDA:::.native_memory_tracker()
+  expect_identical(during$current - baseline, 384 * 8)
+  expect_gte(during$peak - baseline, 384 * 8)
+
+  factory$release(first)
+  factory$release(second)
+  factory$synchronize()
+  gc()
+  final <- cudaverseCUDA:::.native_memory_tracker()
+  expect_identical(final$current, baseline)
+  expect_gte(final$peak - baseline, 384 * 8)
+})
+
 test_that("one thousand allocate-transfer-free cycles do not leak VRAM", {
   skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
   skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
@@ -320,6 +342,7 @@ test_that("one thousand allocate-transfer-free cycles do not leak VRAM", {
   factory$synchronize()
   gc()
   baseline <- cudaverseCUDA:::.native_memory_info()$used
+  tracked_baseline <- cudaverseCUDA:::.native_memory_tracker(reset = TRUE)$current
 
   values <- matrix(seq_len(64) / 13, 8, 8)
   for (iteration in seq_len(1000L)) {
@@ -330,6 +353,9 @@ test_that("one thousand allocate-transfer-free cycles do not leak VRAM", {
   factory$synchronize()
   gc()
   final <- cudaverseCUDA:::.native_memory_info()$used
+  tracked_final <- cudaverseCUDA:::.native_memory_tracker()
 
   expect_lte(abs(final - baseline), 1024^2)
+  expect_identical(tracked_final$current, tracked_baseline)
+  expect_gte(tracked_final$peak - tracked_baseline, length(values) * 8)
 })

@@ -2,12 +2,12 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.6",
   "serialNumber": "urn:uuid:be1a9f8b-d4f0-4bc4-b4f4-0a2bbfd5b9c1",
-  "version": 1,
+  "version": 2,
   "metadata": {
     "component": {
       "type": "library",
       "name": "cudaverseCUDA",
-      "version": "0.1.0.9000",
+      "version": "0.2.0.9000",
       "licenses": [{"license": {"id": "MIT"}}]
     }
   },
@@ -33,6 +33,37 @@
       "scope": "optional",
       "properties": [
         {"name": "cudaverse.distribution", "value": "runtime-discovered; not bundled"}
+      ]
+    },
+    {
+      "type": "library",
+      "name": "NVIDIA cuSOLVER 11",
+      "scope": "optional",
+      "properties": [
+        {"name": "cudaverse.distribution", "value": "runtime-discovered; not bundled"}
+      ]
+    },
+    {
+      "type": "application",
+      "name": "NVIDIA CUDA Compiler",
+      "version": "12.8.1",
+      "scope": "excluded",
+      "properties": [
+        {"name": "cudaverse.distribution", "value": "CI build tool; not bundled"}
+      ]
+    },
+    {
+      "type": "file",
+      "name": "cudaverse_dense_kernels.ptx",
+      "scope": "required",
+      "hashes": [
+        {"alg": "SHA-256", "content": "6ef49a994270f9d31735b267869904b68f71e54d3e263b333e922085ff60d187"}
+      ],
+      "licenses": [{"license": {"id": "MIT"}}],
+      "properties": [
+        {"name": "cudaverse.source", "value": "tools/cuda/dense_kernels.cu"},
+        {"name": "cudaverse.build", "value": "nvcc 12.8.1 -O3 -ptx -arch=compute_75"},
+        {"name": "cudaverse.distribution", "value": "package-owned device code; no NVIDIA runtime library bundled"}
       ]
     }
   ]

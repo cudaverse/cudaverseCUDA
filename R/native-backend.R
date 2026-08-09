@@ -298,6 +298,10 @@ cudaverse_cuda_backend_factory <- function() {
   .Call(C_cudaverse_cuda_memory_info)
 }
 
+.native_memory_tracker <- function(reset = FALSE) {
+  .Call(C_cudaverse_cuda_memory_tracker, reset)
+}
+
 .native_share <- function(storage) {
   .Call(C_cudaverse_cuda_share, storage)
 }

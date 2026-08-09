@@ -115,6 +115,27 @@ struct BackendApi {
 
 BackendApi api;
 
+std::atomic<std::size_t> tracked_device_bytes{0};
+std::atomic<std::size_t> peak_tracked_device_bytes{0};
+
+void track_device_allocation(std::size_t bytes) {
+  std::size_t current = tracked_device_bytes.fetch_add(bytes) + bytes;
+  std::size_t peak = peak_tracked_device_bytes.load();
+  while (current > peak &&
+         !peak_tracked_device_bytes.compare_exchange_weak(peak, current)) {
+  }
+}
+
+void track_device_release(std::size_t bytes) {
+  tracked_device_bytes.fetch_sub(bytes);
+}
+
+void release_tracked_device_memory(CUdeviceptr pointer,
+                                   std::size_t bytes) noexcept {
+  if (pointer == 0 || api.cuMemFree == nullptr) return;
+  if (api.cuMemFree(pointer) == CUDA_SUCCESS) track_device_release(bytes);
+}
+
 enum class DType { Float64, Float32, Integer };
 
 constexpr int CUDAVERSE_MAX_RANK = 8;
@@ -430,7 +451,7 @@ void release_reference(SEXP pointer) {
       if (api.context != nullptr && api.cuCtxSetCurrent != nullptr) {
         api.cuCtxSetCurrent(api.context);
       }
-      api.cuMemFree(buffer->pointer);
+      release_tracked_device_memory(buffer->pointer, buffer->bytes);
     }
     delete buffer;
   }
@@ -497,6 +518,7 @@ SharedBuffer* allocate_buffer(DType dtype, const std::vector<int>& shape,
     delete buffer;
     check_cuda(status, "cuMemAlloc");
   }
+  track_device_allocation(buffer->bytes);
   return buffer;
 }
 
@@ -509,9 +531,10 @@ class DeviceMemory {
     if (status != CUDA_SUCCESS) {
       throw std::runtime_error("cuMemAlloc: " + cuda_error(status));
     }
+    track_device_allocation(bytes_);
   }
   ~DeviceMemory() {
-    if (pointer_ != 0 && api.cuMemFree != nullptr) api.cuMemFree(pointer_);
+    release_tracked_device_memory(pointer_, bytes_);
   }
   DeviceMemory(const DeviceMemory&) = delete;
   DeviceMemory& operator=(const DeviceMemory&) = delete;
@@ -522,7 +545,7 @@ class DeviceMemory {
   }
   DeviceMemory& operator=(DeviceMemory&& other) noexcept {
     if (this != &other) {
-      if (pointer_ != 0 && api.cuMemFree != nullptr) api.cuMemFree(pointer_);
+      release_tracked_device_memory(pointer_, bytes_);
       pointer_ = other.pointer_;
       bytes_ = other.bytes_;
       other.pointer_ = 0;
@@ -840,7 +863,7 @@ extern "C" SEXP C_cudaverse_cuda_from_host(SEXP x, SEXP dtype_sexp,
     UNPROTECT(1);
   }
   if (status != CUDA_SUCCESS) {
-    api.cuMemFree(buffer->pointer);
+    release_tracked_device_memory(buffer->pointer, buffer->bytes);
     delete buffer;
     check_cuda(status, "cuMemcpyHtoD");
   }
@@ -908,7 +931,7 @@ extern "C" SEXP C_cudaverse_cuda_cast(SEXP pointer, SEXP dtype_sexp) {
   void* parameters[] = {&input_pointer, &output_pointer, &elements};
   CUresult status = launch_1d(function, input->elements, parameters);
   if (status != CUDA_SUCCESS) {
-    api.cuMemFree(output->pointer);
+    release_tracked_device_memory(output->pointer, output->bytes);
     delete output;
     check_cuda(status, kernel);
   }
@@ -1007,7 +1030,7 @@ extern "C" SEXP C_cudaverse_cuda_reduce(SEXP pointer, SEXP dim_sexp,
       &input_pointer, &output_pointer, &meta, &kernel_elements};
   CUresult status = launch_1d(function, output_elements, parameters);
   if (status != CUDA_SUCCESS) {
-    api.cuMemFree(output->pointer);
+    release_tracked_device_memory(output->pointer, output->bytes);
     delete output;
     check_cuda(status, kernel);
   }
@@ -1398,7 +1421,7 @@ extern "C" SEXP C_cudaverse_cuda_matmul(SEXP left_pointer,
       reinterpret_cast<const double*>(right->pointer), k, &beta,
       reinterpret_cast<double*>(output->pointer), m);
   if (status != CUBLAS_STATUS_SUCCESS) {
-    api.cuMemFree(output->pointer);
+    release_tracked_device_memory(output->pointer, output->bytes);
     delete output;
     check_cublas(status, "cublasDgemm");
   }
@@ -1433,6 +1456,19 @@ extern "C" SEXP C_cudaverse_cuda_memory_info() {
   SET_VECTOR_ELT(result, 1, Rf_ScalarReal(static_cast<double>(total_bytes)));
   SET_VECTOR_ELT(result, 2,
                  Rf_ScalarReal(static_cast<double>(total_bytes - free_bytes)));
+  UNPROTECT(1);
+  return result;
+}
+
+extern "C" SEXP C_cudaverse_cuda_memory_tracker(SEXP reset_sexp) {
+  int reset = Rf_asLogical(reset_sexp);
+  if (reset == NA_LOGICAL) Rf_error("`reset` must be TRUE or FALSE.");
+  std::size_t current = tracked_device_bytes.load();
+  if (reset) peak_tracked_device_bytes.store(current);
+  std::size_t peak = peak_tracked_device_bytes.load();
+  SEXP result = PROTECT(named_list({"current", "peak"}));
+  SET_VECTOR_ELT(result, 0, Rf_ScalarReal(static_cast<double>(current)));
+  SET_VECTOR_ELT(result, 1, Rf_ScalarReal(static_cast<double>(peak)));
   UNPROTECT(1);
   return result;
 }
@@ -1472,6 +1508,8 @@ static const R_CallMethodDef call_methods[] = {
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_share), 1},
     {"C_cudaverse_cuda_memory_info",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_memory_info), 0},
+    {"C_cudaverse_cuda_memory_tracker",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_memory_tracker), 1},
     {nullptr, nullptr, 0}};
 
 extern "C" void R_init_cudaverseCUDA(DllInfo* dll) {

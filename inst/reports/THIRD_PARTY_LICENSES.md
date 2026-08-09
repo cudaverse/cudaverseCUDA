@@ -7,11 +7,16 @@ libraries or other third-party binary payloads.
 |---|---|---:|---|
 | NVIDIA CUDA Driver | Dynamically loaded from the user's system | No | Supplied by the NVIDIA driver installation |
 | NVIDIA cuBLAS 12 | Dynamically loaded from a user-provided/system path | No | Do not redistribute until the exact files are checked against the current CUDA EULA Attachment A |
+| NVIDIA cuSOLVER 11 | Dynamically loaded from a user-provided/system path | No | Do not redistribute until the exact files are checked against the current CUDA EULA Attachment A |
+| NVIDIA CUDA Compiler 12.8.1 | Builds PTX in a pinned CI container only | No | Build tool; no compiler or Toolkit library is copied into the package |
+| `cudaverse_dense_kernels.ptx` | Forward-compatible device code compiled from this project's MIT-licensed source | Yes | Package-owned build output; source, pinned build command, and SHA-256 are retained and reproducibility-tested |
 | R | C API and package build system | No | Runtime/build dependency |
 | cudaverse | Imported R package | No | MIT |
 
-The release gate fails if a CUDA, cuBLAS, cuSPARSE, cuSOLVER, cuDNN, NVRTC, or
-LibTorch binary appears in a built package. A future binary distribution may
-only include exact files permitted by the current
+The release gate fails if a CUDA, cuBLAS, cuSPARSE, cuSOLVER, cuDNN, NVRTC,
+driver, cubin/fatbin, or LibTorch binary appears in a built package. The only
+allowed PTX is the checksum-pinned file built from this repository's own CUDA
+source. A future binary distribution may only include exact runtime files
+permitted by the current
 [NVIDIA CUDA EULA Attachment A](https://docs.nvidia.com/cuda/eula/) and must
 carry all notices required there.
