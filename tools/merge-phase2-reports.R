@@ -19,7 +19,7 @@ fragments <- lapply(files, jsonlite::read_json, simplifyVector = FALSE)
 first <- fragments[[1L]]
 report <- first
 report$schema <- "cudaverse-native-phase2/1"
-report$source_fragments <- normalizePath(files, winslash = "/")
+report$source_fragments <- basename(files)
 report$benchmarks <- list()
 
 for (fragment in fragments) {
