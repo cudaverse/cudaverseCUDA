@@ -71,6 +71,13 @@ workflow timing from the device-resident PCA/kNN continuation and reports cold
 time, median/p95, operation-owned peak VRAM, numerical error, installation
 size, density, and provenance.
 
+See the completed [RTX 2000 Phase 3 report](inst/reports/STAGE3.md) and its
+[machine-readable evidence](inst/reports/phase3-rtx2000.json). The largest
+`10000 x 128` case measured a 0.21-second native median versus 13.40 seconds
+for base R and 5.46 seconds for torch, with numerical parity and zero tracked
+bytes remaining after cleanup. These measurements describe this machine and
+contract; they are not a universal speed claim.
+
 ## Status
 
 Development version `0.3.0.9000`. This extension is not being submitted to

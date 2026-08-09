@@ -52,6 +52,11 @@ jobs:
         shell: Rscript {0}
       - run: Rscript tools/check-redistributables.R .
       - run: Rscript tools/check-sbom.R
+      - name: Verify the checked-in Phase 3 hardware evidence
+        run: |
+          Rscript tools/check-phase3-report.R
+          Rscript tools/render-phase3-report.R
+          git diff --exit-code -- inst/reports/STAGE3.md
 
   cuda-12-8-1-abi:
     runs-on: ubuntu-latest
