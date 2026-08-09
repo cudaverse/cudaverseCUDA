@@ -23,6 +23,10 @@ report$source_fragments <- basename(files)
 report$fragment_sources <- stats::setNames(
   lapply(fragments, `[[`, "source"), basename(files)
 )
+latest_fragment <- fragments[[length(fragments)]]
+report$hardware <- latest_fragment$hardware
+report$software <- latest_fragment$software
+report$installed_size_bytes <- latest_fragment$installed_size_bytes
 report$benchmarks <- list()
 report$contract$peak_vram_definition <- paste(
   "cudaverseCUDA allocation high-water bytes for native; torch CUDA allocator",
