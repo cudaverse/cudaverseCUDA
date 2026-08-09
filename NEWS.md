@@ -1,3 +1,16 @@
+# cudaverseCUDA 0.3.0.9000
+
+- Added shared-ownership device COO/CSR storage with Matrix-compatible
+  round trips.
+- Added native sparse matrix-vector/matrix multiplication, row/column
+  reductions, and sparse-preserving row/column normalization.
+- Added sparse-input PCA and kNN adapters that expand on the GPU and reuse the
+  validated dense resident pipeline without a full host materialization.
+- Added Phase 3 sparse parity, structured-error, interruption, lifetime, and
+  benchmark contracts.
+- Published the RTX 2000 Phase 3 raw report and rendered summary, including
+  CPU/native/torch timings, operation-owned peak VRAM, and provenance.
+
 # cudaverseCUDA 0.2.0.9000
 
 - Added reproducible CUDA 12.8.1 PTX kernels for casts and dense reductions.

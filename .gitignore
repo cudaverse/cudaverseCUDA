@@ -7,5 +7,6 @@ src/*.dll
 src/*.so
 src/*.dylib
 .Rproj.user/
+.phase3-lib/
 inst/reports/stage1-small-medium.json
 inst/reports/stage1-4096-*.json

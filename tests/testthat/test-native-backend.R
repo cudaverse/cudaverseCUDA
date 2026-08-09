@@ -15,8 +15,15 @@ test_that("native diagnostics and factory follow the extension contract", {
   expect_identical(factory$device, "cuda")
   expect_true(all(c(
     "diagnostics", "capabilities", "from_host", "to_host", "cast",
-    "matmul", "reduce", "synchronize", "release", "error_translate"
+    "matmul", "reduce", "sparse_from_coo", "sparse_to_host",
+    "sparse_reduce", "sparse_normalize", "sparse_matmul_dense",
+    "algorithm_sparse_pca", "algorithm_sparse_knn_prepare",
+    "synchronize", "release", "error_translate"
   ) %in% names(factory)))
+  expect_true(all(c(
+    "sparse-coo", "sparse-csr", "sparse-normalize", "sparse-matmul",
+    "sparse-reduce", "sparse-pca", "sparse-knn"
+  ) %in% factory$capabilities()))
 })
 
 test_that("native reductions match R across dimensions and dtypes", {
@@ -465,4 +472,245 @@ test_that("one thousand allocate-transfer-free cycles do not leak VRAM", {
   expect_lte(abs(final - baseline), 1024^2)
   expect_identical(tracked_final$current, tracked_baseline)
   expect_gte(tracked_final$peak - tracked_baseline, length(values) * 8)
+})
+
+test_that("native COO and CSR storage round-trip with shared ownership", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  old <- options(cudaverse.cuda_backends = "native")
+  on.exit(options(old), add = TRUE)
+  factory <- cudaverse_cuda_backend_factory()
+  source <- Matrix::sparseMatrix(
+    i = c(1L, 1L, 2L, 4L),
+    j = c(1L, 3L, 2L, 3L),
+    x = c(2, 1, 4, 5),
+    dims = c(4L, 3L),
+    dimnames = list(paste0("r", 1:4), paste0("c", 1:3))
+  )
+  csr <- cudaverse::cuda_sparse(source, format = "csr", device = "cuda")
+  expect_type(csr$storage, "externalptr")
+  expect_equal(
+    as.matrix(cudaverse::to_dgCMatrix(csr)),
+    as.matrix(source),
+    tolerance = 0
+  )
+
+  coo <- cudaverse::as_coo(csr)
+  expect_type(coo$storage, "externalptr")
+  factory$sparse_release(csr$storage)
+  expect_equal(
+    as.matrix(cudaverse::to_dgCMatrix(coo)),
+    as.matrix(source),
+    tolerance = 0
+  )
+  expect_true(factory$sparse_release(coo$storage))
+  expect_error(factory$sparse_to_host(coo$storage), "released")
+})
+
+test_that("native sparse matmul, matvec, and reductions match Matrix", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  old <- options(cudaverse.cuda_backends = "native")
+  on.exit(options(old), add = TRUE)
+  set.seed(3001)
+  source <- Matrix::rsparsematrix(37, 19, density = 0.18)
+  dense <- matrix(stats::rnorm(19 * 7), 19, 7)
+  sparse <- cudaverse::cuda_sparse(source, device = "cuda")
+
+  product <- cudaverse::sparse_matmul_dense(sparse, dense)
+  expect_identical(
+    cudaverse::tensor_device(product),
+    c(device = "cuda", backend = "native")
+  )
+  expect_equal(
+    cudaverse::to_cpu(product),
+    as.matrix(source %*% dense),
+    tolerance = 1e-10
+  )
+  vector <- stats::rnorm(ncol(source))
+  expect_equal(
+    as.numeric(cudaverse::sparse_matvec(sparse, vector)),
+    as.vector(source %*% vector),
+    tolerance = 1e-10
+  )
+  expect_equal(
+    as.numeric(cudaverse::sparse_row_sums(sparse)),
+    as.numeric(Matrix::rowSums(source)),
+    tolerance = 1e-10
+  )
+  expect_equal(
+    as.numeric(cudaverse::sparse_col_sums(sparse)),
+    as.numeric(Matrix::colSums(source)),
+    tolerance = 1e-10
+  )
+  expect_identical(
+    cudaverse::cuda_provenance(product)$output_device,
+    "cuda"
+  )
+  expect_identical(
+    cudaverse::cuda_provenance(cudaverse::sparse_row_sums(sparse))$backend,
+    "native"
+  )
+})
+
+test_that("native sparse normalization feeds resident PCA and stable kNN", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  old <- options(cudaverse.cuda_backends = "native")
+  on.exit(options(old), add = TRUE)
+  set.seed(3002)
+  values <- matrix(stats::rpois(96 * 24, lambda = 2), 96, 24)
+  values[, 1L] <- values[, 1L] + 1
+  values[rowSums(values) == 0, 1L] <- 1
+  rownames(values) <- paste0("sample_", seq_len(nrow(values)))
+  colnames(values) <- paste0("feature_", seq_len(ncol(values)))
+  source <- Matrix::Matrix(values, sparse = TRUE)
+  sparse <- cudaverse::cuda_sparse(source, device = "cuda")
+  normalized <- cudaverse::sparse_normalize(
+    sparse, margin = "rows", scale_factor = 1000, log1p = TRUE
+  )
+  dense <- log1p(values * 1000 / rowSums(values))
+  expect_equal(
+    as.matrix(cudaverse::to_dgCMatrix(normalized)),
+    dense,
+    tolerance = 1e-10
+  )
+
+  native_pca <- cudaverse::cuda_pca(
+    normalized, 8L, center = TRUE, scale. = FALSE, device = "cuda"
+  )
+  cpu_pca <- cudaverse::cuda_pca(
+    dense, 8L, center = TRUE, scale. = FALSE, device = "cpu"
+  )
+  expect_equal(
+    tcrossprod(native_pca$rotation),
+    tcrossprod(cpu_pca$rotation),
+    tolerance = 1e-8
+  )
+  state <- attr(native_pca$x, "cudaverse_native_state", exact = TRUE)
+  expect_type(state$storage, "externalptr")
+  pca_stages <- cudaverse::cuda_provenance(native_pca)
+  expect_true(all(c(
+    "normalization", "sparse_to_dense", "preprocessing",
+    "decomposition", "scores_resident"
+  ) %in% pca_stages$stage))
+  expect_identical(attr(pca_stages, "schema", exact = TRUE),
+                   "cudaverse-stage/1")
+
+  native_knn <- cudaverse::cuda_knn(
+    native_pca$x, k = 15L, device = "cuda", batch_size = 31L
+  )
+  cpu_knn <- cudaverse::cuda_knn(
+    native_pca$x, k = 15L, device = "cpu", batch_size = 31L
+  )
+  expect_identical(native_knn$index, cpu_knn$index)
+  expect_equal(native_knn$distance, cpu_knn$distance, tolerance = 1e-8)
+  expect_identical(
+    cudaverse::cuda_provenance(native_knn)$stage,
+    c("input_materialization", "distance", "neighbor_selection")
+  )
+
+  direct_native <- cudaverse::cuda_knn(
+    normalized, k = 7L, device = "cuda", batch_size = 23L
+  )
+  direct_cpu <- cudaverse::cuda_knn(
+    dense, k = 7L, device = "cpu", batch_size = 23L
+  )
+  expect_identical(direct_native$index, direct_cpu$index)
+  expect_equal(direct_native$distance, direct_cpu$distance, tolerance = 1e-8)
+  direct_stages <- cudaverse::cuda_provenance(direct_native)
+  expect_true(all(c(
+    "normalization", "sparse_to_dense", "distance", "neighbor_selection"
+  ) %in% direct_stages$stage))
+})
+
+test_that("native sparse failures are structured and backend remains reusable", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  old <- options(cudaverse.cuda_backends = "native")
+  on.exit(options(old), add = TRUE)
+  source <- Matrix::Diagonal(4, x = 1:4)
+  sparse <- cudaverse::cuda_sparse(source, device = "cuda")
+  broken <- sparse
+  broken$shape <- c(4L, 3L)
+  condition <- tryCatch(
+    cudaverse::sparse_matmul_dense(broken, matrix(1, 3, 2)),
+    error = identity
+  )
+  expect_s3_class(condition, "cudaverse_native_error")
+  expect_identical(condition$backend, "native")
+  expect_identical(condition$operation, "sparse_matmul_dense")
+
+  expect_equal(
+    as.numeric(cudaverse::sparse_row_sums(sparse)),
+    1:4,
+    tolerance = 0
+  )
+})
+
+test_that("one thousand sparse allocate-normalize-free cycles do not leak", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  factory <- cudaverse_cuda_backend_factory()
+  factory$synchronize()
+  gc()
+  baseline <- cudaverseCUDA:::.native_memory_info()$used
+  tracked_baseline <- cudaverseCUDA:::.native_memory_tracker(reset = TRUE)$current
+  i <- rep(1:16, each = 3L)
+  j <- rep(c(1L, 4L, 8L), 16L)
+  values <- rep(c(1, 2, 3), 16L)
+
+  for (iteration in seq_len(1000L)) {
+    storage <- factory$sparse_from_coo(
+      i, j, values, c(16L, 8L), "csr"
+    )
+    normalized <- factory$sparse_normalize(
+      storage, 0L, 100, TRUE
+    )
+    factory$sparse_release(normalized$storage)
+    factory$sparse_release(storage)
+  }
+  factory$synchronize()
+  gc()
+  final <- cudaverseCUDA:::.native_memory_info()$used
+  tracked_final <- cudaverseCUDA:::.native_memory_tracker()
+  expect_lte(abs(final - baseline), 1024^2)
+  expect_identical(tracked_final$current, tracked_baseline)
+  expect_gt(tracked_final$peak, tracked_baseline)
+})
+
+test_that("R time-limit interruption leaves sparse native state reusable", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  old <- options(cudaverse.cuda_backends = "native")
+  on.exit(options(old), add = TRUE)
+  factory <- cudaverse_cuda_backend_factory()
+  source <- Matrix::rsparsematrix(512, 256, density = 0.05)
+  sparse <- cudaverse::cuda_sparse(abs(source), device = "cuda")
+  dense <- matrix(stats::rnorm(256 * 64), 256, 64)
+  factory$synchronize()
+  gc()
+  tracked_baseline <- cudaverseCUDA:::.native_memory_tracker(reset = TRUE)$current
+
+  condition <- tryCatch({
+    setTimeLimit(elapsed = 0.01, transient = TRUE)
+    repeat {
+      product <- cudaverse::sparse_matmul_dense(sparse, dense)
+      cudaverse::to_cpu(product)
+    }
+  }, error = identity, finally = setTimeLimit(cpu = Inf, elapsed = Inf,
+                                               transient = FALSE))
+  expect_s3_class(condition, "error")
+  if (exists("product", inherits = FALSE)) rm(product)
+  gc()
+  factory$synchronize()
+  expect_identical(
+    cudaverseCUDA:::.native_memory_tracker()$current,
+    tracked_baseline
+  )
+  expect_equal(
+    as.numeric(cudaverse::sparse_row_sums(sparse)),
+    as.numeric(Matrix::rowSums(abs(source))),
+    tolerance = 1e-10
+  )
 })

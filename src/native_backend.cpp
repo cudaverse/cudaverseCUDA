@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -6,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Include the C++ standard library before R headers. Rinternals.h defines a
@@ -157,6 +159,21 @@ struct SharedBuffer {
   std::size_t elements;
   DType dtype;
   std::vector<int> shape;
+  std::atomic<unsigned int> references;
+};
+
+struct SharedSparseBuffer {
+  CUdeviceptr row_index;
+  CUdeviceptr row_ptr;
+  CUdeviceptr col_index;
+  CUdeviceptr values;
+  std::size_t row_index_bytes;
+  std::size_t row_ptr_bytes;
+  std::size_t col_index_bytes;
+  std::size_t value_bytes;
+  int rows;
+  int columns;
+  int nnz;
   std::atomic<unsigned int> references;
 };
 
@@ -432,6 +449,12 @@ SEXP buffer_tag() {
   return tag;
 }
 
+SEXP sparse_buffer_tag() {
+  static SEXP tag = R_NilValue;
+  if (tag == R_NilValue) tag = Rf_install("cudaverseCUDA_sparse_buffer");
+  return tag;
+}
+
 SharedBuffer* get_buffer(SEXP pointer) {
   if (TYPEOF(pointer) != EXTPTRSXP ||
       R_ExternalPtrTag(pointer) != buffer_tag()) {
@@ -465,6 +488,50 @@ SEXP make_pointer(SharedBuffer* buffer, bool add_reference) {
   if (add_reference) buffer->references.fetch_add(1);
   SEXP pointer = PROTECT(R_MakeExternalPtr(buffer, buffer_tag(), R_NilValue));
   R_RegisterCFinalizerEx(pointer, buffer_finalizer, static_cast<Rboolean>(1));
+  UNPROTECT(1);
+  return pointer;
+}
+
+SharedSparseBuffer* get_sparse_buffer(SEXP pointer) {
+  if (TYPEOF(pointer) != EXTPTRSXP ||
+      R_ExternalPtrTag(pointer) != sparse_buffer_tag()) {
+    Rf_error("Expected a live cudaverseCUDA sparse external pointer.");
+  }
+  auto* buffer = static_cast<SharedSparseBuffer*>(R_ExternalPtrAddr(pointer));
+  if (buffer == nullptr) {
+    Rf_error("The native CUDA sparse allocation was released.");
+  }
+  return buffer;
+}
+
+void release_sparse_reference(SEXP pointer) {
+  auto* buffer = static_cast<SharedSparseBuffer*>(R_ExternalPtrAddr(pointer));
+  if (buffer == nullptr) return;
+  R_ClearExternalPtr(pointer);
+  if (buffer->references.fetch_sub(1) == 1) {
+    if (api.context != nullptr && api.cuCtxSetCurrent != nullptr) {
+      api.cuCtxSetCurrent(api.context);
+    }
+    release_tracked_device_memory(buffer->row_index,
+                                  buffer->row_index_bytes);
+    release_tracked_device_memory(buffer->row_ptr, buffer->row_ptr_bytes);
+    release_tracked_device_memory(buffer->col_index,
+                                  buffer->col_index_bytes);
+    release_tracked_device_memory(buffer->values, buffer->value_bytes);
+    delete buffer;
+  }
+}
+
+void sparse_buffer_finalizer(SEXP pointer) {
+  release_sparse_reference(pointer);
+}
+
+SEXP make_sparse_pointer(SharedSparseBuffer* buffer, bool add_reference) {
+  if (add_reference) buffer->references.fetch_add(1);
+  SEXP pointer = PROTECT(
+      R_MakeExternalPtr(buffer, sparse_buffer_tag(), R_NilValue));
+  R_RegisterCFinalizerEx(
+      pointer, sparse_buffer_finalizer, static_cast<Rboolean>(1));
   UNPROTECT(1);
   return pointer;
 }
@@ -584,6 +651,46 @@ void cusolver_or_throw(cusolverStatus_t status, const char* operation) {
 void launch_or_throw(CUfunction function, const char* name,
                      std::size_t elements, void** parameters) {
   cuda_or_throw(launch_1d(function, elements, parameters), name);
+}
+
+DeviceMemory copy_host_to_device(const void* source, std::size_t bytes,
+                                 const char* operation) {
+  DeviceMemory result(bytes);
+  if (bytes > 0) {
+    cuda_or_throw(api.cuMemcpyHtoD(result.pointer(), source, bytes), operation);
+  }
+  return result;
+}
+
+DeviceMemory copy_device_to_device(CUdeviceptr source, std::size_t bytes,
+                                   const char* operation) {
+  DeviceMemory result(bytes);
+  if (bytes > 0) {
+    cuda_or_throw(api.cuMemcpyDtoD(result.pointer(), source, bytes), operation);
+  }
+  return result;
+}
+
+SharedBuffer* shared_buffer_from_device(DeviceMemory&& memory, DType dtype,
+                                        const std::vector<int>& shape,
+                                        std::size_t elements) {
+  std::size_t bytes = memory.bytes();
+  return new SharedBuffer{
+      memory.release(), bytes, elements, dtype, shape, 1};
+}
+
+SharedSparseBuffer* shared_sparse_from_devices(
+    DeviceMemory&& row_index, DeviceMemory&& row_ptr,
+    DeviceMemory&& col_index, DeviceMemory&& values,
+    int rows, int columns, int nnz) {
+  std::size_t row_index_bytes = row_index.bytes();
+  std::size_t row_ptr_bytes = row_ptr.bytes();
+  std::size_t col_index_bytes = col_index.bytes();
+  std::size_t value_bytes = values.bytes();
+  return new SharedSparseBuffer{
+      row_index.release(), row_ptr.release(), col_index.release(),
+      values.release(), row_index_bytes, row_ptr_bytes, col_index_bytes,
+      value_bytes, rows, columns, nnz, 1};
 }
 
 struct DeviceSvd {
@@ -772,6 +879,51 @@ DeviceMemory distance_device(CUdeviceptr query, int query_rows,
       &reference_rows, &columns, &metric, &query_offset, &self};
   launch_or_throw(finalize, "cudaverse_distance_from_gram_f64",
                   output_elements, parameters);
+  return output;
+}
+
+DeviceMemory sparse_sums_device(SharedSparseBuffer* sparse, int margin) {
+  int groups = margin == 0 ? sparse->rows : sparse->columns;
+  DeviceMemory output(static_cast<std::size_t>(groups) * sizeof(double));
+  CUdeviceptr output_pointer = output.pointer();
+  if (margin == 0) {
+    CUfunction function = get_kernel("cudaverse_sparse_row_sums_f64");
+    void* parameters[] = {
+        &sparse->row_ptr, &sparse->values, &output_pointer, &sparse->rows};
+    launch_or_throw(function, "cudaverse_sparse_row_sums_f64",
+                    sparse->rows, parameters);
+  } else {
+    CUfunction fill = get_kernel("cudaverse_fill_f64");
+    double zero = 0.0;
+    unsigned long long elements = static_cast<unsigned long long>(groups);
+    void* fill_parameters[] = {&output_pointer, &zero, &elements};
+    launch_or_throw(fill, "cudaverse_fill_f64", groups, fill_parameters);
+    CUfunction function = get_kernel("cudaverse_sparse_col_sums_f64");
+    void* parameters[] = {
+        &sparse->col_index, &sparse->values, &output_pointer, &sparse->nnz};
+    launch_or_throw(function, "cudaverse_sparse_col_sums_f64",
+                    sparse->nnz, parameters);
+  }
+  return output;
+}
+
+DeviceMemory sparse_to_dense_device(SharedSparseBuffer* sparse) {
+  std::size_t elements =
+      static_cast<std::size_t>(sparse->rows) * sparse->columns;
+  DeviceMemory output(elements * sizeof(double));
+  CUdeviceptr output_pointer = output.pointer();
+  CUfunction fill = get_kernel("cudaverse_fill_f64");
+  double zero = 0.0;
+  unsigned long long fill_elements =
+      static_cast<unsigned long long>(elements);
+  void* fill_parameters[] = {&output_pointer, &zero, &fill_elements};
+  launch_or_throw(fill, "cudaverse_fill_f64", elements, fill_parameters);
+  CUfunction scatter = get_kernel("cudaverse_csr_to_dense_f64");
+  void* scatter_parameters[] = {
+      &sparse->row_index, &sparse->col_index, &sparse->values,
+      &output_pointer, &sparse->rows, &sparse->nnz};
+  launch_or_throw(scatter, "cudaverse_csr_to_dense_f64",
+                  sparse->nnz, scatter_parameters);
   return output;
 }
 
@@ -1045,6 +1197,285 @@ extern "C" SEXP C_cudaverse_cuda_reduce(SEXP pointer, SEXP dim_sexp,
   SET_VECTOR_ELT(result, 1, result_shape);
   UNPROTECT(3);
   return result;
+}
+
+extern "C" SEXP C_cudaverse_cuda_sparse_from_coo(
+    SEXP i_sexp, SEXP j_sexp, SEXP values_sexp, SEXP shape_sexp,
+    SEXP format_sexp) {
+  require_backend();
+  require_kernels();
+  if (TYPEOF(shape_sexp) != INTSXP || XLENGTH(shape_sexp) != 2) {
+    Rf_error("Sparse `shape` must contain two integers.");
+  }
+  int rows = INTEGER(shape_sexp)[0];
+  int columns = INTEGER(shape_sexp)[1];
+  if (rows < 1 || columns < 1) {
+    Rf_error("Sparse dimensions must be positive.");
+  }
+  if (TYPEOF(format_sexp) != STRSXP || XLENGTH(format_sexp) != 1 ||
+      STRING_ELT(format_sexp, 0) == NA_STRING) {
+    Rf_error("Sparse `format` must be `coo` or `csr`.");
+  }
+  std::string format = CHAR(STRING_ELT(format_sexp, 0));
+  if (format != "coo" && format != "csr") {
+    Rf_error("Sparse `format` must be `coo` or `csr`.");
+  }
+  if (XLENGTH(i_sexp) != XLENGTH(j_sexp) ||
+      XLENGTH(i_sexp) != XLENGTH(values_sexp) ||
+      XLENGTH(i_sexp) > std::numeric_limits<int>::max()) {
+    Rf_error("Sparse COO vectors must have matching supported lengths.");
+  }
+
+  SEXP i_values = PROTECT(Rf_coerceVector(i_sexp, INTSXP));
+  SEXP j_values = PROTECT(Rf_coerceVector(j_sexp, INTSXP));
+  SEXP numeric_values = PROTECT(Rf_coerceVector(values_sexp, REALSXP));
+  try {
+    int nnz = static_cast<int>(XLENGTH(i_values));
+    std::vector<int> row_index(static_cast<std::size_t>(nnz));
+    std::vector<int> col_index(static_cast<std::size_t>(nnz));
+    std::vector<int> row_ptr(static_cast<std::size_t>(rows) + 1, 0);
+    std::vector<double> values(static_cast<std::size_t>(nnz));
+    int previous_row = -1;
+    int previous_column = -1;
+    for (int position = 0; position < nnz; ++position) {
+      int row = INTEGER(i_values)[position] - 1;
+      int column = INTEGER(j_values)[position] - 1;
+      double value = REAL(numeric_values)[position];
+      if (row < 0 || row >= rows || column < 0 || column >= columns) {
+        throw std::runtime_error("Sparse COO indices are outside `shape`.");
+      }
+      if (!R_FINITE(value)) {
+        throw std::runtime_error("Native CUDA sparse values must be finite.");
+      }
+      if (row < previous_row ||
+          (row == previous_row && column <= previous_column)) {
+        throw std::runtime_error(
+            "Sparse COO entries must be unique and sorted by row and column.");
+      }
+      row_index[static_cast<std::size_t>(position)] = row;
+      col_index[static_cast<std::size_t>(position)] = column;
+      values[static_cast<std::size_t>(position)] = value;
+      ++row_ptr[static_cast<std::size_t>(row) + 1];
+      previous_row = row;
+      previous_column = column;
+    }
+    for (int row = 0; row < rows; ++row) {
+      row_ptr[static_cast<std::size_t>(row) + 1] +=
+          row_ptr[static_cast<std::size_t>(row)];
+    }
+
+    DeviceMemory device_row_index = copy_host_to_device(
+        row_index.data(), row_index.size() * sizeof(int),
+        "cuMemcpyHtoD(sparse row index)");
+    DeviceMemory device_row_ptr = copy_host_to_device(
+        row_ptr.data(), row_ptr.size() * sizeof(int),
+        "cuMemcpyHtoD(sparse row pointer)");
+    DeviceMemory device_col_index = copy_host_to_device(
+        col_index.data(), col_index.size() * sizeof(int),
+        "cuMemcpyHtoD(sparse column index)");
+    DeviceMemory device_values = copy_host_to_device(
+        values.data(), values.size() * sizeof(double),
+        "cuMemcpyHtoD(sparse values)");
+    SharedSparseBuffer* sparse = shared_sparse_from_devices(
+        std::move(device_row_index), std::move(device_row_ptr),
+        std::move(device_col_index), std::move(device_values),
+        rows, columns, nnz);
+    SEXP result = make_sparse_pointer(sparse, false);
+    UNPROTECT(3);
+    return result;
+  } catch (const std::exception& exception) {
+    UNPROTECT(3);
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
+}
+
+extern "C" SEXP C_cudaverse_cuda_sparse_to_host(SEXP pointer) {
+  require_backend();
+  SharedSparseBuffer* sparse = get_sparse_buffer(pointer);
+  SEXP result = PROTECT(named_list(
+      {"i", "j", "values", "row_ptr", "col_index", "shape"}));
+  SEXP i = PROTECT(Rf_allocVector(INTSXP, sparse->nnz));
+  SEXP j = PROTECT(Rf_allocVector(INTSXP, sparse->nnz));
+  SEXP values = PROTECT(Rf_allocVector(REALSXP, sparse->nnz));
+  SEXP row_ptr = PROTECT(Rf_allocVector(INTSXP, sparse->rows + 1));
+  SEXP col_index = PROTECT(Rf_allocVector(INTSXP, sparse->nnz));
+  SEXP shape = PROTECT(Rf_allocVector(INTSXP, 2));
+  if (sparse->nnz > 0) {
+    check_cuda(api.cuMemcpyDtoH(INTEGER(i), sparse->row_index,
+                                sparse->row_index_bytes),
+               "cuMemcpyDtoH(sparse row index)");
+    check_cuda(api.cuMemcpyDtoH(INTEGER(j), sparse->col_index,
+                                sparse->col_index_bytes),
+               "cuMemcpyDtoH(sparse column index)");
+    check_cuda(api.cuMemcpyDtoH(REAL(values), sparse->values,
+                                sparse->value_bytes),
+               "cuMemcpyDtoH(sparse values)");
+    check_cuda(api.cuMemcpyDtoH(INTEGER(col_index), sparse->col_index,
+                                sparse->col_index_bytes),
+               "cuMemcpyDtoH(sparse column index)");
+    for (int position = 0; position < sparse->nnz; ++position) {
+      ++INTEGER(i)[position];
+      ++INTEGER(j)[position];
+    }
+  }
+  check_cuda(api.cuMemcpyDtoH(INTEGER(row_ptr), sparse->row_ptr,
+                              sparse->row_ptr_bytes),
+             "cuMemcpyDtoH(sparse row pointer)");
+  INTEGER(shape)[0] = sparse->rows;
+  INTEGER(shape)[1] = sparse->columns;
+  SET_VECTOR_ELT(result, 0, i);
+  SET_VECTOR_ELT(result, 1, j);
+  SET_VECTOR_ELT(result, 2, values);
+  SET_VECTOR_ELT(result, 3, row_ptr);
+  SET_VECTOR_ELT(result, 4, col_index);
+  SET_VECTOR_ELT(result, 5, shape);
+  UNPROTECT(7);
+  return result;
+}
+
+extern "C" SEXP C_cudaverse_cuda_sparse_reduce(SEXP pointer,
+                                                  SEXP margin_sexp) {
+  require_backend();
+  require_kernels();
+  SharedSparseBuffer* sparse = get_sparse_buffer(pointer);
+  int margin = Rf_asInteger(margin_sexp);
+  if (margin != 0 && margin != 1) {
+    Rf_error("Sparse reduction margin must be zero (rows) or one (columns).");
+  }
+  try {
+    DeviceMemory sums = sparse_sums_device(sparse, margin);
+    int groups = margin == 0 ? sparse->rows : sparse->columns;
+    SEXP result = PROTECT(Rf_allocVector(REALSXP, groups));
+    cuda_or_throw(api.cuMemcpyDtoH(
+                      REAL(result), sums.pointer(), sums.bytes()),
+                  "cuMemcpyDtoH(sparse reduction)");
+    UNPROTECT(1);
+    return result;
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
+}
+
+extern "C" SEXP C_cudaverse_cuda_sparse_normalize(
+    SEXP pointer, SEXP margin_sexp, SEXP scale_sexp, SEXP log1p_sexp) {
+  require_backend();
+  require_kernels();
+  SharedSparseBuffer* sparse = get_sparse_buffer(pointer);
+  int margin = Rf_asInteger(margin_sexp);
+  double scale_factor = Rf_asReal(scale_sexp);
+  int use_log1p = Rf_asLogical(log1p_sexp);
+  if ((margin != 0 && margin != 1) || !R_FINITE(scale_factor) ||
+      scale_factor <= 0 || use_log1p == NA_LOGICAL) {
+    Rf_error("Invalid native sparse normalization parameters.");
+  }
+  try {
+    DeviceMemory sums = sparse_sums_device(sparse, margin);
+    int groups = margin == 0 ? sparse->rows : sparse->columns;
+    std::vector<double> host_sums(static_cast<std::size_t>(groups));
+    cuda_or_throw(api.cuMemcpyDtoH(
+                      host_sums.data(), sums.pointer(), sums.bytes()),
+                  "cuMemcpyDtoH(sparse normalization sums)");
+    for (double value : host_sums) {
+      if (!std::isfinite(value) || value <= 0) {
+        throw std::runtime_error(
+            "Every normalized sparse margin must have a positive finite sum.");
+      }
+    }
+
+    DeviceMemory normalized(sparse->value_bytes);
+    CUdeviceptr sum_pointer = sums.pointer();
+    CUdeviceptr output_pointer = normalized.pointer();
+    CUfunction function = get_kernel("cudaverse_sparse_normalize_f64");
+    void* parameters[] = {
+        &sparse->row_index, &sparse->col_index, &sparse->values,
+        &sum_pointer, &output_pointer, &sparse->nnz, &margin,
+        &scale_factor, &use_log1p};
+    launch_or_throw(function, "cudaverse_sparse_normalize_f64",
+                    sparse->nnz, parameters);
+
+    DeviceMemory row_index = copy_device_to_device(
+        sparse->row_index, sparse->row_index_bytes,
+        "cuMemcpyDtoD(sparse row index)");
+    DeviceMemory row_ptr = copy_device_to_device(
+        sparse->row_ptr, sparse->row_ptr_bytes,
+        "cuMemcpyDtoD(sparse row pointer)");
+    DeviceMemory col_index = copy_device_to_device(
+        sparse->col_index, sparse->col_index_bytes,
+        "cuMemcpyDtoD(sparse column index)");
+    SharedSparseBuffer* output = shared_sparse_from_devices(
+        std::move(row_index), std::move(row_ptr), std::move(col_index),
+        std::move(normalized), sparse->rows, sparse->columns, sparse->nnz);
+    SEXP output_pointer_sexp = PROTECT(make_sparse_pointer(output, false));
+    SEXP host_values = PROTECT(Rf_allocVector(REALSXP, sparse->nnz));
+    if (sparse->nnz > 0) {
+      cuda_or_throw(api.cuMemcpyDtoH(
+                        REAL(host_values), output->values,
+                        output->value_bytes),
+                    "cuMemcpyDtoH(normalized sparse values)");
+    }
+    SEXP result = PROTECT(named_list({"storage", "values"}));
+    SET_VECTOR_ELT(result, 0, output_pointer_sexp);
+    SET_VECTOR_ELT(result, 1, host_values);
+    UNPROTECT(3);
+    return result;
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
+}
+
+extern "C" SEXP C_cudaverse_cuda_sparse_matmul_dense(
+    SEXP sparse_pointer, SEXP dense_pointer) {
+  require_backend();
+  require_kernels();
+  SharedSparseBuffer* sparse = get_sparse_buffer(sparse_pointer);
+  SharedBuffer* dense = get_buffer(dense_pointer);
+  if (dense->dtype != DType::Float64 || dense->shape.size() != 2 ||
+      dense->shape[0] != sparse->columns) {
+    Rf_error("Native sparse-dense multiplication requires a conformable float64 matrix.");
+  }
+  int dense_columns = dense->shape[1];
+  std::size_t elements =
+      static_cast<std::size_t>(sparse->rows) * dense_columns;
+  try {
+    DeviceMemory device_output(elements * sizeof(double));
+    CUdeviceptr dense_values = dense->pointer;
+    CUdeviceptr output_values = device_output.pointer();
+    CUfunction function = get_kernel("cudaverse_csr_spmm_f64");
+    void* parameters[] = {
+        &sparse->row_ptr, &sparse->col_index, &sparse->values,
+        &dense_values, &output_values, &sparse->rows, &sparse->columns,
+        &dense_columns};
+    launch_or_throw(function, "cudaverse_csr_spmm_f64",
+                    elements, parameters);
+    SharedBuffer* output = shared_buffer_from_device(
+        std::move(device_output), DType::Float64,
+        {sparse->rows, dense_columns}, elements);
+    return make_pointer(output, false);
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
+}
+
+extern "C" SEXP C_cudaverse_cuda_sparse_to_dense(SEXP pointer) {
+  require_backend();
+  require_kernels();
+  SharedSparseBuffer* sparse = get_sparse_buffer(pointer);
+  try {
+    DeviceMemory device_output = sparse_to_dense_device(sparse);
+    std::size_t elements =
+        static_cast<std::size_t>(sparse->rows) * sparse->columns;
+    SharedBuffer* output = shared_buffer_from_device(
+        std::move(device_output), DType::Float64,
+        {sparse->rows, sparse->columns}, elements);
+    return make_pointer(output, false);
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
 }
 
 extern "C" SEXP C_cudaverse_cuda_svd(SEXP pointer, SEXP nu_sexp,
@@ -1461,6 +1892,17 @@ extern "C" SEXP C_cudaverse_cuda_share(SEXP pointer) {
   return make_pointer(buffer, true);
 }
 
+extern "C" SEXP C_cudaverse_cuda_sparse_release(SEXP pointer) {
+  get_sparse_buffer(pointer);
+  release_sparse_reference(pointer);
+  return Rf_ScalarLogical(1);
+}
+
+extern "C" SEXP C_cudaverse_cuda_sparse_share(SEXP pointer) {
+  SharedSparseBuffer* buffer = get_sparse_buffer(pointer);
+  return make_sparse_pointer(buffer, true);
+}
+
 extern "C" SEXP C_cudaverse_cuda_memory_info() {
   std::string reason;
   if (!load_driver(reason)) Rf_error("%s", reason.c_str());
@@ -1498,6 +1940,18 @@ static const R_CallMethodDef call_methods[] = {
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_from_host), 3},
     {"C_cudaverse_cuda_to_host",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_to_host), 1},
+    {"C_cudaverse_cuda_sparse_from_coo",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_sparse_from_coo), 5},
+    {"C_cudaverse_cuda_sparse_to_host",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_sparse_to_host), 1},
+    {"C_cudaverse_cuda_sparse_reduce",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_sparse_reduce), 2},
+    {"C_cudaverse_cuda_sparse_normalize",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_sparse_normalize), 4},
+    {"C_cudaverse_cuda_sparse_matmul_dense",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_sparse_matmul_dense), 2},
+    {"C_cudaverse_cuda_sparse_to_dense",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_sparse_to_dense), 1},
     {"C_cudaverse_cuda_cast",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_cast), 2},
     {"C_cudaverse_cuda_reduce",
@@ -1524,6 +1978,10 @@ static const R_CallMethodDef call_methods[] = {
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_release), 1},
     {"C_cudaverse_cuda_share",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_share), 1},
+    {"C_cudaverse_cuda_sparse_release",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_sparse_release), 1},
+    {"C_cudaverse_cuda_sparse_share",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_sparse_share), 1},
     {"C_cudaverse_cuda_memory_info",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_memory_info), 0},
     {"C_cudaverse_cuda_memory_tracker",
