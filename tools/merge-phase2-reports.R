@@ -61,6 +61,64 @@ if (length(missing)) {
   stop("Missing required phase 2 results: ", paste(missing, collapse = ", "))
 }
 
+values <- function(x) unname(unlist(x, use.names = FALSE))
+for (shape in required_shapes) {
+  for (backend in required_backends) {
+    result <- report$benchmarks[[shape]][[backend]]
+    label <- paste(shape, backend, sep = "/")
+    if (!identical(result$status, "complete")) {
+      stop("Phase 2 result is not complete: ", label, ".")
+    }
+    if (!isTRUE(result$validation$passed) ||
+        !isTRUE(result$validation$knn_indices_identical)) {
+      stop("Phase 2 numerical parity failed: ", label, ".")
+    }
+  }
+}
+
+for (shape in required_shapes) {
+  native <- report$benchmarks[[shape]]$native
+  pca <- native$provenance$pca
+  knn <- native$provenance$knn
+  if (!isTRUE(native$provenance$pca_scores_device_resident) ||
+      !identical(pca$schema, "cudaverse-stage/1") ||
+      !identical(knn$schema, "cudaverse-stage/1") ||
+      !identical(
+        values(pca$stages$stage),
+        c("preprocessing", "decomposition", "scores_resident")
+      ) ||
+      !identical(
+        values(pca$stages$output_device),
+        c("cuda", "cpu", "cuda")
+      ) ||
+      !identical(
+        values(knn$stages$stage),
+        c("input_materialization", "distance", "neighbor_selection")
+      ) ||
+      !identical(values(knn$stages$backend), rep("native", 3L)) ||
+      !identical(
+        values(knn$stages$output_device),
+        c("cuda", "cuda", "cpu")
+      )) {
+    stop("Native Phase 2 residency/provenance failed: ", shape, ".")
+  }
+}
+
+dirty_sources <- vapply(
+  report$fragment_sources,
+  function(source) {
+    isTRUE(source$cudaverse$dirty) || isTRUE(source$cudaverseCUDA$dirty)
+  },
+  logical(1)
+)
+if (any(dirty_sources)) {
+  stop(
+    "Phase 2 fragments were generated from dirty source trees: ",
+    paste(names(dirty_sources)[dirty_sources], collapse = ", "),
+    "."
+  )
+}
+
 report$generated_at_utc <- format(Sys.time(), tz = "UTC", usetz = TRUE)
 validation_file <- Sys.getenv("CUDAVERSE_PHASE2_VALIDATION", unset = "")
 if (nzchar(validation_file)) {
@@ -70,6 +128,9 @@ if (nzchar(validation_file)) {
   report$hardware_validation <- jsonlite::read_json(
     validation_file, simplifyVector = FALSE
   )
+  if (!isTRUE(report$hardware_validation$passed)) {
+    stop("RTX 2000 Phase 2 stability validation failed.")
+  }
 }
 output <- Sys.getenv(
   "CUDAVERSE_REPORT_FILE",
