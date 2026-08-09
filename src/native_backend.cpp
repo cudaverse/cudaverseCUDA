@@ -40,6 +40,7 @@ constexpr CUresult CUDA_SUCCESS = 0;
 constexpr cublasStatus_t CUBLAS_STATUS_SUCCESS = 0;
 constexpr cusolverStatus_t CUSOLVER_STATUS_SUCCESS = 0;
 constexpr int CUBLAS_OP_N = 0;
+constexpr int CUBLAS_OP_T = 1;
 
 using cuInit_t = CUresult (*)(unsigned int);
 using cuDriverGetVersion_t = CUresult (*)(int*);
@@ -694,6 +695,63 @@ SEXP numeric_vector(const std::vector<double>& values) {
   return result;
 }
 
+DeviceMemory row_norms_squared(CUdeviceptr input, int rows, int columns) {
+  CUfunction function = get_kernel("cudaverse_row_norms_squared_f64");
+  DeviceMemory output(static_cast<std::size_t>(rows) * sizeof(double));
+  CUdeviceptr output_pointer = output.pointer();
+  void* parameters[] = {&input, &output_pointer, &rows, &columns};
+  launch_or_throw(function, "cudaverse_row_norms_squared_f64", rows,
+                  parameters);
+  return output;
+}
+
+DeviceMemory distance_device(CUdeviceptr query, int query_rows,
+                             CUdeviceptr reference, int reference_rows,
+                             int columns, int metric, int query_offset,
+                             int self, CUdeviceptr cached_reference_norms = 0) {
+  CUfunction finalize = get_kernel("cudaverse_distance_from_gram_f64");
+  DeviceMemory query_norms;
+  DeviceMemory reference_norms;
+  CUdeviceptr query_norm_pointer = 0;
+  CUdeviceptr reference_norm_pointer = cached_reference_norms;
+  if (metric == 0) {
+    query_norms = row_norms_squared(query, query_rows, columns);
+    query_norm_pointer = query_norms.pointer();
+    if (reference_norm_pointer == 0) {
+      reference_norms = row_norms_squared(
+          reference, reference_rows, columns);
+      reference_norm_pointer = reference_norms.pointer();
+    }
+  }
+
+  std::size_t output_elements =
+      static_cast<std::size_t>(query_rows) * reference_rows;
+  DeviceMemory gram(output_elements * sizeof(double));
+  const double alpha = 1.0;
+  const double beta = 0.0;
+  cublasStatus_t blas_status = api.cublasDgemm(
+      api.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T,
+      query_rows, reference_rows, columns, &alpha,
+      reinterpret_cast<const double*>(query), query_rows,
+      reinterpret_cast<const double*>(reference), reference_rows, &beta,
+      reinterpret_cast<double*>(gram.pointer()), query_rows);
+  if (blas_status != CUBLAS_STATUS_SUCCESS) {
+    throw std::runtime_error("cublasDgemm(distance): " +
+                             cublas_error(blas_status));
+  }
+
+  DeviceMemory output(output_elements * sizeof(double));
+  CUdeviceptr gram_pointer = gram.pointer();
+  CUdeviceptr output_pointer = output.pointer();
+  void* parameters[] = {
+      &gram_pointer, &query, &reference, &query_norm_pointer,
+      &reference_norm_pointer, &output_pointer, &query_rows,
+      &reference_rows, &columns, &metric, &query_offset, &self};
+  launch_or_throw(finalize, "cudaverse_distance_from_gram_f64",
+                  output_elements, parameters);
+  return output;
+}
+
 SEXP scalar_string_or_na(const std::string& value) {
   return value.empty() ? Rf_ScalarString(NA_STRING) : Rf_mkString(value.c_str());
 }
@@ -1129,6 +1187,164 @@ extern "C" SEXP C_cudaverse_cuda_pca(SEXP pointer,
   return R_NilValue;
 }
 
+extern "C" SEXP C_cudaverse_cuda_row_norms(SEXP pointer) {
+  require_backend();
+  require_kernels();
+  SharedBuffer* input = get_buffer(pointer);
+  if (input->dtype != DType::Float64 || input->shape.size() != 2) {
+    Rf_error("Native CUDA row norms require one float64 matrix.");
+  }
+  try {
+    DeviceMemory norms = row_norms_squared(
+        input->pointer, input->shape[0], input->shape[1]);
+    auto* result = new SharedBuffer{
+        norms.release(),
+        static_cast<std::size_t>(input->shape[0]) * sizeof(double),
+        static_cast<std::size_t>(input->shape[0]),
+        DType::Float64,
+        {input->shape[0]},
+        1};
+    return make_pointer(result, false);
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
+}
+
+extern "C" SEXP C_cudaverse_cuda_distance(SEXP query_pointer,
+                                             SEXP reference_pointer,
+                                             SEXP metric_sexp,
+                                             SEXP self_sexp) {
+  require_backend();
+  require_kernels();
+  SharedBuffer* query = get_buffer(query_pointer);
+  SharedBuffer* reference = get_buffer(reference_pointer);
+  if (query->dtype != DType::Float64 ||
+      reference->dtype != DType::Float64 ||
+      query->shape.size() != 2 || reference->shape.size() != 2 ||
+      query->shape[1] != reference->shape[1]) {
+    Rf_error("Native CUDA distance requires conformable float64 matrices.");
+  }
+  std::string metric_name = CHAR(STRING_ELT(metric_sexp, 0));
+  int metric = metric_name == "cosine" ? 1 : 0;
+  int self = Rf_asLogical(self_sexp) == 1 ? 1 : 0;
+  try {
+    DeviceMemory distance = distance_device(
+        query->pointer, query->shape[0], reference->pointer,
+        reference->shape[0], query->shape[1], metric, 0, self);
+    std::size_t elements = static_cast<std::size_t>(query->shape[0]) *
+                           reference->shape[0];
+    auto* result = new SharedBuffer{
+        distance.release(), elements * sizeof(double), elements,
+        DType::Float64, {query->shape[0], reference->shape[0]}, 1};
+    return make_pointer(result, false);
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
+}
+
+extern "C" SEXP C_cudaverse_cuda_knn_block(
+    SEXP reference_pointer, SEXP reference_norms_pointer,
+    SEXP first_sexp, SEXP count_sexp, SEXP k_sexp, SEXP metric_sexp) {
+  require_backend();
+  require_kernels();
+  SharedBuffer* reference = get_buffer(reference_pointer);
+  if (reference->dtype != DType::Float64 || reference->shape.size() != 2) {
+    Rf_error("Native CUDA kNN requires one float64 reference matrix.");
+  }
+  int reference_rows = reference->shape[0];
+  int columns = reference->shape[1];
+  int first = Rf_asInteger(first_sexp);
+  int count = Rf_asInteger(count_sexp);
+  int k = Rf_asInteger(k_sexp);
+  if (first == NA_INTEGER || count == NA_INTEGER || k == NA_INTEGER ||
+      first < 0 || count < 1 || first + count > reference_rows ||
+      k < 1 || k >= reference_rows) {
+    Rf_error("Native CUDA kNN block parameters are out of range.");
+  }
+  std::string metric_name = CHAR(STRING_ELT(metric_sexp, 0));
+  int metric = metric_name == "cosine" ? 1 : 0;
+  CUdeviceptr cached_norms = 0;
+  if (metric == 0) {
+    SharedBuffer* norms = get_buffer(reference_norms_pointer);
+    if (norms->dtype != DType::Float64 || norms->elements !=
+        static_cast<std::size_t>(reference_rows)) {
+      Rf_error("Native CUDA kNN reference norms are invalid.");
+    }
+    cached_norms = norms->pointer;
+  }
+
+  try {
+    CUfunction gather = get_kernel("cudaverse_gather_rows_f64");
+    DeviceMemory query(
+        static_cast<std::size_t>(count) * columns * sizeof(double));
+    CUdeviceptr reference_device = reference->pointer;
+    CUdeviceptr query_device = query.pointer();
+    void* gather_parameters[] = {
+        &reference_device, &query_device, &reference_rows, &columns,
+        &first, &count};
+    launch_or_throw(gather, "cudaverse_gather_rows_f64",
+                    static_cast<std::size_t>(count) * columns,
+                    gather_parameters);
+
+    DeviceMemory distances = distance_device(
+        query.pointer(), count, reference->pointer, reference_rows,
+        columns, metric, first, 1, cached_norms);
+    std::size_t output_elements = static_cast<std::size_t>(count) * k;
+    DeviceMemory output_index(output_elements * sizeof(int));
+    DeviceMemory output_distance(output_elements * sizeof(double));
+    CUdeviceptr distance_pointer = distances.pointer();
+    CUdeviceptr index_pointer = output_index.pointer();
+    CUdeviceptr output_distance_pointer = output_distance.pointer();
+    int self = 1;
+    void* topk_parameters[] = {
+        &distance_pointer, &index_pointer, &output_distance_pointer,
+        &count, &reference_rows, &k, &first, &self};
+    if (k <= 32) {
+      constexpr unsigned int threads = 128;
+      unsigned int shared_bytes = static_cast<unsigned int>(
+          static_cast<std::size_t>(threads) * k *
+          (sizeof(double) + sizeof(int)));
+      cuda_or_throw(
+          api.cuLaunchKernel(
+              get_kernel("cudaverse_topk_stable_f64"), count, 1, 1,
+              threads, 1, 1, shared_bytes, nullptr, topk_parameters, nullptr),
+          "cudaverse_topk_stable_f64");
+    } else {
+      launch_or_throw(
+          get_kernel("cudaverse_topk_stable_general_f64"),
+          "cudaverse_topk_stable_general_f64", count, topk_parameters);
+    }
+
+    std::vector<int> host_index(output_elements);
+    std::vector<double> host_distance(output_elements);
+    cuda_or_throw(api.cuMemcpyDtoH(
+                      host_index.data(), output_index.pointer(),
+                      output_elements * sizeof(int)),
+                  "cuMemcpyDtoH(kNN index)");
+    cuda_or_throw(api.cuMemcpyDtoH(
+                      host_distance.data(), output_distance.pointer(),
+                      output_elements * sizeof(double)),
+                  "cuMemcpyDtoH(kNN distance)");
+
+    SEXP result = PROTECT(named_list({"index", "distance"}));
+    SEXP index = PROTECT(Rf_allocVector(INTSXP, output_elements));
+    SEXP distance = PROTECT(Rf_allocVector(REALSXP, output_elements));
+    std::memcpy(INTEGER(index), host_index.data(),
+                output_elements * sizeof(int));
+    std::memcpy(REAL(distance), host_distance.data(),
+                output_elements * sizeof(double));
+    SET_VECTOR_ELT(result, 0, index);
+    SET_VECTOR_ELT(result, 1, distance);
+    UNPROTECT(3);
+    return result;
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  }
+  return R_NilValue;
+}
+
 extern "C" SEXP C_cudaverse_cuda_matmul(SEXP left_pointer,
                                           SEXP right_pointer) {
   require_backend();
@@ -1210,6 +1426,12 @@ static const R_CallMethodDef call_methods[] = {
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_svd), 3},
     {"C_cudaverse_cuda_pca",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_pca), 4},
+    {"C_cudaverse_cuda_row_norms",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_row_norms), 1},
+    {"C_cudaverse_cuda_distance",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_distance), 4},
+    {"C_cudaverse_cuda_knn_block",
+     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_knn_block), 6},
     {"C_cudaverse_cuda_matmul",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_matmul), 2},
     {"C_cudaverse_cuda_synchronize",

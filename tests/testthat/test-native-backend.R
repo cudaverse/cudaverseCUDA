@@ -111,6 +111,47 @@ test_that("native PCA matches R subspaces and retains device scores", {
     }
   }
 })
+
+test_that("native distances and stable device top-k match CPU ordering", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  old <- options(cudaverse.cuda_backends = "native")
+  on.exit(options(old), add = TRUE)
+
+  values <- rbind(
+    c(0, 0), c(1, 0), c(-1, 0), c(0, 1), c(0, -1), c(1, 0)
+  )
+  cpu_distance <- cudaverse::cuda_distance(values, device = "cpu")
+  native_distance <- cudaverse::cuda_distance(values, device = "cuda")
+  expect_equal(
+    as.vector(native_distance), as.vector(cpu_distance), tolerance = 1e-10
+  )
+
+  factory <- cudaverse_cuda_backend_factory()
+  state <- factory$algorithm_knn_prepare(values)
+  native <- factory$algorithm_knn_select(
+    state, values, 4L, "euclidean", 2L
+  )
+  cpu <- cudaverse::cuda_knn(
+    values, k = 4, device = "cpu", batch_size = 2
+  )
+  expect_identical(native$index, cpu$index)
+  expect_equal(native$distance, cpu$distance, tolerance = 1e-10)
+
+  cosine_values <- rbind(
+    c(1, 0), c(2, 0), c(0, 1), c(0, -1), c(-1, 0), c(1, 1)
+  )
+  unit_values <- cosine_values / sqrt(rowSums(cosine_values^2))
+  cosine_state <- factory$algorithm_knn_prepare(unit_values)
+  native_cosine <- factory$algorithm_knn_select(
+    cosine_state, unit_values, 3L, "cosine", 3L
+  )
+  cpu_cosine <- cudaverse::cuda_knn(
+    cosine_values, k = 3, metric = "cosine", device = "cpu", batch_size = 3
+  )
+  expect_identical(native_cosine$index, cpu_cosine$index)
+  expect_equal(native_cosine$distance, cpu_cosine$distance, tolerance = 1e-10)
+})
 test_that("native errors translate into structured cudaverse conditions", {
   factory <- cudaverse_cuda_backend_factory()
   raw <- simpleError("injected CUDA failure")

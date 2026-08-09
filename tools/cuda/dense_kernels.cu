@@ -382,15 +382,17 @@ extern "C" __global__ void cudaverse_topk_stable_general_f64(
     if (self && query_offset + query_row == candidate) continue;
     double value = distance[query_row +
         static_cast<unsigned long long>(candidate) * query_rows];
+    int candidate_index = candidate + 1;
     int position = k - 1;
     unsigned long long last = query_row +
         static_cast<unsigned long long>(position) * query_rows;
-    if (!cudaverse_better(value, candidate, output_distance[last],
+    if (!cudaverse_better(value, candidate_index, output_distance[last],
                           output_index[last])) continue;
     while (position > 0) {
       unsigned long long previous = query_row +
           static_cast<unsigned long long>(position - 1) * query_rows;
-      if (!cudaverse_better(value, candidate, output_distance[previous],
+      if (!cudaverse_better(value, candidate_index,
+                            output_distance[previous],
                             output_index[previous])) break;
       unsigned long long current = query_row +
           static_cast<unsigned long long>(position) * query_rows;
@@ -401,6 +403,6 @@ extern "C" __global__ void cudaverse_topk_stable_general_f64(
     unsigned long long output = query_row +
         static_cast<unsigned long long>(position) * query_rows;
     output_distance[output] = value;
-    output_index[output] = candidate + 1;
+    output_index[output] = candidate_index;
   }
 }

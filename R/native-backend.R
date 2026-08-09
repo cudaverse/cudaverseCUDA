@@ -113,6 +113,82 @@
   result
 }
 
+.native_matrix_storage <- function(values) {
+  state <- attr(values, "cudaverse_native_state", exact = TRUE)
+  valid_state <- is.list(state) && identical(state$backend, "native") &&
+    identical(state$dtype, "float64") &&
+    identical(state$shape, as.integer(dim(values))) &&
+    typeof(state$storage) == "externalptr"
+  if (valid_state) {
+    return(.native_share(state$storage))
+  }
+  .native_from_host(values, "float64", dim(values))
+}
+
+.native_algorithm_distance <- function(x, y, metric) {
+  self <- identical(x, y)
+  x_storage <- .native_matrix_storage(x)
+  on.exit(.native_release(x_storage), add = TRUE)
+  y_storage <- if (self) x_storage else .native_matrix_storage(y)
+  if (!self) on.exit(.native_release(y_storage), add = TRUE)
+  distance_storage <- .Call(
+    C_cudaverse_cuda_distance,
+    x_storage,
+    y_storage,
+    as.character(metric),
+    self
+  )
+  on.exit(.native_release(distance_storage), add = TRUE)
+  matrix(
+    .native_to_host(distance_storage),
+    nrow = nrow(x),
+    ncol = nrow(y)
+  )
+}
+
+.native_knn_prepare <- function(values) {
+  storage <- .native_matrix_storage(values)
+  norms <- .Call(C_cudaverse_cuda_row_norms, storage)
+  list(
+    storage = storage,
+    norms = norms,
+    rows = nrow(values),
+    columns = ncol(values)
+  )
+}
+
+.native_knn_block_compat <- function(storage, values, rows, metric) {
+  .native_algorithm_distance(
+    values[rows, , drop = FALSE],
+    values,
+    metric
+  )
+}
+
+.native_knn_select <- function(storage, values, k, metric, batch_size) {
+  on.exit(.native_release(storage$storage), add = TRUE)
+  on.exit(.native_release(storage$norms), add = TRUE)
+  starts <- seq.int(1L, storage$rows, by = batch_size)
+  index <- matrix(NA_integer_, storage$rows, k)
+  distance <- matrix(NA_real_, storage$rows, k)
+  for (start in starts) {
+    count <- min(batch_size, storage$rows - start + 1L)
+    block <- .Call(
+      C_cudaverse_cuda_knn_block,
+      storage$storage,
+      storage$norms,
+      as.integer(start - 1L),
+      as.integer(count),
+      as.integer(k),
+      as.character(metric)
+    )
+    rows <- seq.int(start, length.out = count)
+    index[rows, ] <- matrix(block$index, nrow = count, ncol = k)
+    distance[rows, ] <- matrix(block$distance, nrow = count, ncol = k)
+  }
+  list(index = index, distance = distance)
+}
+
 .native_matmul <- function(x, y) {
   .Call(C_cudaverse_cuda_matmul, x, y)
 }
@@ -170,6 +246,9 @@ cudaverse_cuda_backend_factory <- function() {
       "reduce",
       "svd",
       "pca",
+      "distance",
+      "knn",
+      "stable-topk",
       "synchronize",
       "shared-ownership"
     ),
@@ -180,6 +259,10 @@ cudaverse_cuda_backend_factory <- function() {
     reduce = .native_reduce,
     algorithm_svd = .native_algorithm_svd,
     algorithm_pca = .native_algorithm_pca,
+    algorithm_distance = .native_algorithm_distance,
+    algorithm_knn_prepare = .native_knn_prepare,
+    algorithm_knn_block = .native_knn_block_compat,
+    algorithm_knn_select = .native_knn_select,
     synchronize = .native_synchronize,
     release = .native_release,
     error_translate = .native_error_translate
