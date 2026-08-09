@@ -71,6 +71,9 @@ jobs:
           nvcc -O3 -ptx -arch=compute_75 \
             tools/cuda/dense_kernels.cu \
             -o generated-kernels/cudaverse_dense_kernels.ptx
+          cmp inst/kernels/cudaverse_dense_kernels.ptx \
+            generated-kernels/cudaverse_dense_kernels.ptx
+          (cd inst/kernels && sha256sum --check SHA256SUMS)
           sha256sum generated-kernels/cudaverse_dense_kernels.ptx \
             > generated-kernels/SHA256SUMS
       - uses: actions/upload-artifact@v7
