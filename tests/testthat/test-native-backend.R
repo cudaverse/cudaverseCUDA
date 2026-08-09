@@ -41,12 +41,24 @@ test_that("native reductions match R across dimensions and dtypes", {
   )
   expect_equal(
     cudaverse::to_cpu(cudaverse::tensor_sum(tensor, dim = c(1, 3))),
-    array(apply(values, 2, sum), dim = 3L),
+    array(
+      apply(values, 2, sum),
+      dim = 3L,
+      dimnames = list(feature = paste0("feature_", 1:3))
+    ),
     tolerance = 1e-10
   )
   expect_equal(
     cudaverse::to_cpu(cudaverse::tensor_mean(tensor, dim = 2, keepdim = TRUE)),
-    array(apply(values, c(1, 3), mean), dim = c(2, 1, 4)),
+    array(
+      apply(values, c(1, 3), mean),
+      dim = c(2, 1, 4),
+      dimnames = list(
+        sample = c("sample_a", "sample_b"),
+        feature = NULL,
+        batch = paste0("batch_", 1:4)
+      )
+    ),
     tolerance = 1e-10
   )
   reduced <- cudaverse::tensor_sum(tensor, dim = 2, keepdim = TRUE)
