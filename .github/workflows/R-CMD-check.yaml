@@ -60,6 +60,25 @@ jobs:
           path: cudaverseCUDA.so
           retention-days: 14
 
+  cuda-12-8-1-ptx:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compile forward-compatible dense kernels
+        run: |
+          mkdir -p generated-kernels
+          nvcc -O3 -ptx -arch=compute_75 \
+            tools/cuda/dense_kernels.cu \
+            -o generated-kernels/cudaverse_dense_kernels.ptx
+          sha256sum generated-kernels/cudaverse_dense_kernels.ptx \
+            > generated-kernels/SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cudaverseCUDA-ptx-cuda-12.8.1-${{ github.sha }}
+          path: generated-kernels
+          retention-days: 14
+
   package-artifacts:
     name: artifact (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
