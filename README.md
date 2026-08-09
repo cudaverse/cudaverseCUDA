@@ -45,9 +45,10 @@ explicitly selected Windows DLL is used to resolve that library's dependencies.
 No NVIDIA binary is bundled in the source package or current CI artifacts.
 macOS builds a clear unsupported-platform stub. An explicit CUDA request never
 silently falls back when the driver, cuBLAS, cuSOLVER, a required symbol, or
-memory is unavailable. Native remains explicitly opt-in during Phase 2;
-`device = "auto"` will prefer it only after the published parity, stability,
-and benchmark gates are complete.
+memory is unavailable. Native remains explicitly opt-in in 0.2. The dense
+Phase 2 evidence is necessary but not sufficient for global `device = "auto"`
+preference: element-wise/broadcast and sparse CUDA paths must first pass the
+same full-surface compatibility gate.
 
 For development hardware tests:
 

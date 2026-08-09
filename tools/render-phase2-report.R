@@ -105,8 +105,9 @@ lines <- c(
   paste(
     "Dense Phase 2 passed the local RTX 2000 parity, device-residency,",
     "structured-error, interruption, lifecycle, and benchmark gates. The",
-    "benchmark candidate used explicit native selection; automatic preference",
-    "is decided in the final merge audit. Sparse CUDA was intentionally not started."
+    "benchmark candidate used explicit native selection. Global automatic",
+    "preference remains compatibility-first because element-wise/broadcast and",
+    "sparse native paths are outside this milestone. Sparse CUDA was intentionally not started."
   ),
   "",
   paste0("- Hardware: ", report$hardware$nvidia_smi, "."),
