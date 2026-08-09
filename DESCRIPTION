@@ -1,17 +1,17 @@
 Package: cudaverseCUDA
 Title: Native CUDA Backend Extension for Cudaverse
-Version: 0.2.0.9000
+Version: 0.3.0.9000
 Authors@R:
     person("Yaoxiang", "Li", email = "liyaoxiang@outlook.com",
            role = c("aut", "cre"))
 Description: Provides an optional lightweight native CUDA backend for the
     'cudaverse' package. The extension dynamically discovers the NVIDIA CUDA
     Driver, cuBLAS, and cuSOLVER libraries at runtime and implements device
-    diagnostics, allocation, host-device transfer, dense casts and reductions,
-    matrix multiplication, singular-value decomposition,
-    principal-component analysis, exact distances, and stable nearest-neighbour
-    selection without linking to 'LibTorch' or requiring a CUDA Toolkit during
-    package installation.
+    diagnostics, allocation, host-device transfer, dense and sparse storage,
+    reductions, matrix multiplication, normalization, singular-value
+    decomposition, principal-component analysis, exact distances, and stable
+    nearest-neighbour selection without linking to 'LibTorch' or requiring a
+    CUDA Toolkit during package installation.
 License: MIT + file LICENSE
 URL: https://github.com/cudaverse/cudaverseCUDA
 BugReports: https://github.com/cudaverse/cudaverseCUDA/issues

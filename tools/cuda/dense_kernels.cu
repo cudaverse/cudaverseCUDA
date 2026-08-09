@@ -406,3 +406,67 @@ extern "C" __global__ void cudaverse_topk_stable_general_f64(
     output_index[output] = candidate_index;
   }
 }
+
+extern "C" __global__ void cudaverse_fill_f64(
+    double* output, double value, unsigned long long elements) {
+  unsigned long long index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < elements) output[index] = value;
+}
+
+extern "C" __global__ void cudaverse_sparse_row_sums_f64(
+    const int* row_ptr, const double* values, double* output, int rows) {
+  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  if (row >= rows) return;
+  double total = 0.0;
+  for (int position = row_ptr[row]; position < row_ptr[row + 1]; ++position) {
+    total += values[position];
+  }
+  output[row] = total;
+}
+
+extern "C" __global__ void cudaverse_sparse_col_sums_f64(
+    const int* col_index, const double* values, double* output, int nnz) {
+  int position = blockIdx.x * blockDim.x + threadIdx.x;
+  if (position < nnz) atomicAdd(output + col_index[position], values[position]);
+}
+
+extern "C" __global__ void cudaverse_sparse_normalize_f64(
+    const int* row_index, const int* col_index, const double* values,
+    const double* sums, double* output, int nnz, int margin,
+    double scale_factor, int use_log1p) {
+  int position = blockIdx.x * blockDim.x + threadIdx.x;
+  if (position >= nnz) return;
+  int group = margin == 0 ? row_index[position] : col_index[position];
+  double value = values[position] * scale_factor / sums[group];
+  output[position] = use_log1p ? log1p(value) : value;
+}
+
+extern "C" __global__ void cudaverse_csr_spmm_f64(
+    const int* row_ptr, const int* col_index, const double* values,
+    const double* dense, double* output, int rows, int dense_rows,
+    int dense_columns) {
+  unsigned long long index = blockIdx.x * blockDim.x + threadIdx.x;
+  unsigned long long elements =
+      static_cast<unsigned long long>(rows) * dense_columns;
+  if (index >= elements) return;
+  int row = static_cast<int>(index % rows);
+  int column = static_cast<int>(index / rows);
+  double total = 0.0;
+  for (int position = row_ptr[row]; position < row_ptr[row + 1]; ++position) {
+    int inner = col_index[position];
+    total += values[position] *
+        dense[inner + static_cast<unsigned long long>(column) * dense_rows];
+  }
+  output[index] = total;
+}
+
+extern "C" __global__ void cudaverse_csr_to_dense_f64(
+    const int* row_index, const int* col_index, const double* values,
+    double* output, int rows, int nnz) {
+  int position = blockIdx.x * blockDim.x + threadIdx.x;
+  if (position >= nnz) return;
+  int row = row_index[position];
+  int column = col_index[position];
+  output[row + static_cast<unsigned long long>(column) * rows] =
+      values[position];
+}

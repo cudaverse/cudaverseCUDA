@@ -55,6 +55,65 @@
   .Call(C_cudaverse_cuda_to_host, storage)
 }
 
+.native_sparse_from_coo <- function(i, j, values, shape, format = "csr") {
+  .native_ensure_kernels()
+  .Call(
+    C_cudaverse_cuda_sparse_from_coo,
+    as.integer(i),
+    as.integer(j),
+    as.numeric(values),
+    as.integer(shape),
+    as.character(format)
+  )
+}
+
+.native_sparse_to_host <- function(storage) {
+  .Call(C_cudaverse_cuda_sparse_to_host, storage)
+}
+
+.native_sparse_reduce <- function(storage, margin) {
+  .native_ensure_kernels()
+  .Call(C_cudaverse_cuda_sparse_reduce, storage, as.integer(margin))
+}
+
+.native_sparse_normalize <- function(storage, margin, scale_factor, log1p) {
+  .native_ensure_kernels()
+  .Call(
+    C_cudaverse_cuda_sparse_normalize,
+    storage,
+    as.integer(margin),
+    as.numeric(scale_factor),
+    as.logical(log1p)
+  )
+}
+
+.native_sparse_matmul_dense <- function(storage, i, j, values, shape, dense,
+                                        dense_storage = NULL,
+                                        dense_shape = dim(dense)) {
+  .native_ensure_kernels()
+  owned <- is.null(dense_storage)
+  if (owned) {
+    dense_storage <- .native_from_host(dense, "float64", dense_shape)
+    on.exit(.native_release(dense_storage), add = TRUE)
+  }
+  result <- .Call(
+    C_cudaverse_cuda_sparse_matmul_dense,
+    storage,
+    dense_storage
+  )
+  list(
+    storage = result,
+    shape = as.integer(c(shape[[1L]], dense_shape[[2L]])),
+    dtype = "float64",
+    device_resident = TRUE
+  )
+}
+
+.native_sparse_to_dense <- function(storage) {
+  .native_ensure_kernels()
+  .Call(C_cudaverse_cuda_sparse_to_dense, storage)
+}
+
 .native_cast <- function(storage, dtype) {
   .native_ensure_kernels()
   .Call(C_cudaverse_cuda_cast, storage, as.character(dtype))
@@ -86,10 +145,8 @@
   result
 }
 
-.native_algorithm_pca <- function(x, n_components, center, scale) {
-  .native_ensure_kernels()
-  storage <- .native_from_host(x, "float64", dim(x))
-  on.exit(.native_release(storage), add = TRUE)
+.native_pca_from_storage <- function(storage, shape, n_components,
+                                     center, scale) {
   result <- .Call(
     C_cudaverse_cuda_pca,
     storage,
@@ -99,13 +156,13 @@
   )
   result$rotation <- matrix(
     result$rotation,
-    nrow = ncol(x),
+    nrow = shape[[2L]],
     ncol = n_components
   )
-  result$x <- matrix(result$x, nrow = nrow(x), ncol = n_components)
+  result$x <- matrix(result$x, nrow = shape[[1L]], ncol = n_components)
   attr(result$x, "cudaverse_native_state") <- list(
     storage = result$scores_storage,
-    shape = as.integer(c(nrow(x), n_components)),
+    shape = as.integer(c(shape[[1L]], n_components)),
     dtype = "float64",
     backend = "native"
   )
@@ -113,6 +170,24 @@
   result$center <- if (isTRUE(center)) result$center else FALSE
   result$scale <- if (isTRUE(scale)) result$scale else FALSE
   result
+}
+
+.native_algorithm_pca <- function(x, n_components, center, scale) {
+  .native_ensure_kernels()
+  storage <- .native_from_host(x, "float64", dim(x))
+  on.exit(.native_release(storage), add = TRUE)
+  .native_pca_from_storage(
+    storage, dim(x), n_components, center, scale
+  )
+}
+
+.native_algorithm_sparse_pca <- function(storage, shape, n_components,
+                                         center, scale) {
+  dense <- .native_sparse_to_dense(storage)
+  on.exit(.native_release(dense), add = TRUE)
+  .native_pca_from_storage(
+    dense, as.integer(shape), n_components, center, scale
+  )
 }
 
 .native_matrix_storage <- function(values) {
@@ -179,6 +254,30 @@
     norms = norms,
     rows = nrow(values),
     columns = ncol(values)
+  )
+}
+
+.native_sparse_knn_prepare <- function(storage, shape,
+                                       metric = "euclidean") {
+  .native_ensure_kernels()
+  dense <- .native_sparse_to_dense(storage)
+  if (identical(metric, "cosine")) {
+    normalized <- .Call(C_cudaverse_cuda_normalize_rows, dense)
+    .native_release(dense)
+    dense <- normalized
+  }
+  norms <- tryCatch(
+    .Call(C_cudaverse_cuda_row_norms, dense),
+    error = function(error) {
+      .native_release(dense)
+      stop(error)
+    }
+  )
+  list(
+    storage = dense,
+    norms = norms,
+    rows = as.integer(shape[[1L]]),
+    columns = as.integer(shape[[2L]])
   )
 }
 
@@ -274,18 +373,36 @@ cudaverse_cuda_backend_factory <- function() {
       "distance",
       "knn",
       "stable-topk",
+      "sparse",
+      "sparse-coo",
+      "sparse-csr",
+      "sparse-normalize",
+      "sparse-matmul",
+      "sparse-reduce",
+      "sparse-pca",
+      "sparse-knn",
       "synchronize",
       "shared-ownership"
     ),
     from_host = .native_from_host,
     to_host = .native_to_host,
+    sparse_from_coo = .native_sparse_from_coo,
+    sparse_to_host = .native_sparse_to_host,
+    sparse_reduce = .native_sparse_reduce,
+    sparse_normalize = .native_sparse_normalize,
+    sparse_matmul_dense = .native_sparse_matmul_dense,
+    sparse_to_dense = .native_sparse_to_dense,
+    sparse_share = .native_sparse_share,
+    sparse_release = .native_sparse_release,
     cast = .native_cast,
     matmul = .native_matmul,
     reduce = .native_reduce,
     algorithm_svd = .native_algorithm_svd,
     algorithm_pca = .native_algorithm_pca,
+    algorithm_sparse_pca = .native_algorithm_sparse_pca,
     algorithm_distance = .native_algorithm_distance,
     algorithm_knn_prepare = .native_knn_prepare,
+    algorithm_sparse_knn_prepare = .native_sparse_knn_prepare,
     algorithm_knn_block = .native_knn_block_compat,
     algorithm_knn_select = .native_knn_select,
     synchronize = .native_synchronize,
@@ -309,4 +426,12 @@ cudaverse_cuda_backend_factory <- function() {
 
 .native_share <- function(storage) {
   .Call(C_cudaverse_cuda_share, storage)
+}
+
+.native_sparse_release <- function(storage) {
+  invisible(.Call(C_cudaverse_cuda_sparse_release, storage))
+}
+
+.native_sparse_share <- function(storage) {
+  .Call(C_cudaverse_cuda_sparse_share, storage)
 }
