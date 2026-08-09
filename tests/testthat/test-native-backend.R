@@ -164,6 +164,107 @@ test_that("native distances and stable device top-k match CPU ordering", {
   expect_identical(native_general$index, cpu_general$index)
   expect_equal(native_general$distance, cpu_general$distance, tolerance = 1e-10)
 })
+
+test_that("native algorithm failures are structured and release temporaries", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  skip_if_not(nzchar(Sys.getenv("CUDAVERSE_CUSOLVER_PATH")))
+  old <- options(cudaverse.cuda_backends = "native")
+  on.exit(options(old), add = TRUE)
+
+  warmup <- matrix(rnorm(24), 8, 3)
+  cudaverse::cuda_pca(warmup, 2, device = "cuda")
+  factory <- cudaverse_cuda_backend_factory()
+  factory$synchronize()
+  gc()
+  baseline <- cudaverseCUDA:::.native_memory_info()$used
+
+  constant <- matrix(1, 8, 3)
+  condition <- tryCatch(
+    cudaverse:::.backend_call(
+      "native", "algorithm_pca", constant, 2L, TRUE, TRUE
+    ),
+    error = identity
+  )
+  expect_s3_class(condition, "cudaverse_native_error")
+  expect_s3_class(condition, "cudaverse_backend_error")
+  expect_identical(condition$backend, "native")
+  expect_identical(condition$operation, "algorithm_pca")
+
+  for (iteration in seq_len(100L)) {
+    try(
+      cudaverse:::.backend_call(
+        "native", "algorithm_pca", constant, 2L, TRUE, TRUE
+      ),
+      silent = TRUE
+    )
+  }
+  factory$synchronize()
+  gc()
+  final <- cudaverseCUDA:::.native_memory_info()$used
+  expect_lte(abs(final - baseline), 1024^2)
+})
+
+test_that("repeated dense pipelines release all operation-owned VRAM", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  skip_if_not(nzchar(Sys.getenv("CUDAVERSE_CUSOLVER_PATH")))
+  factory <- cudaverse_cuda_backend_factory()
+  values <- matrix(rnorm(400), 50, 8)
+
+  warmup <- factory$algorithm_pca(values, 4L, TRUE, FALSE)
+  state <- factory$algorithm_knn_prepare(warmup$x)
+  factory$algorithm_knn_select(state, warmup$x, 5L, "euclidean", 13L)
+  rm(warmup, state)
+  factory$synchronize()
+  gc()
+  baseline <- cudaverseCUDA:::.native_memory_info()$used
+
+  for (iteration in seq_len(100L)) {
+    fit <- factory$algorithm_pca(values, 4L, TRUE, FALSE)
+    state <- factory$algorithm_knn_prepare(fit$x)
+    result <- factory$algorithm_knn_select(
+      state, fit$x, 5L, "euclidean", 13L
+    )
+    expect_identical(dim(result$index), c(50L, 5L))
+  }
+  rm(fit, state, result)
+  factory$synchronize()
+  gc()
+  final <- cudaverseCUDA:::.native_memory_info()$used
+  expect_lte(abs(final - baseline), 1024^2)
+})
+
+test_that("R time-limit interruption leaves the native backend reusable", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$available))
+  factory <- cudaverse_cuda_backend_factory()
+  values <- matrix(rnorm(40000), 2000, 20)
+  factory$synchronize()
+  gc()
+  baseline <- cudaverseCUDA:::.native_memory_info()$used
+
+  state <- factory$algorithm_knn_prepare(values)
+  on.exit(setTimeLimit(cpu = Inf, elapsed = Inf, transient = FALSE), add = TRUE)
+  setTimeLimit(elapsed = 0.02, transient = TRUE)
+  condition <- tryCatch(
+    factory$algorithm_knn_select(
+      state, values, 15L, "euclidean", 1L
+    ),
+    error = identity
+  )
+  setTimeLimit(cpu = Inf, elapsed = Inf, transient = FALSE)
+  expect_s3_class(condition, "error")
+  expect_match(conditionMessage(condition), "time limit|elapsed")
+
+  factory$synchronize()
+  probe <- factory$from_host(matrix(1:4, 2), "float64", c(2L, 2L))
+  expect_equal(factory$to_host(probe), as.numeric(1:4), tolerance = 0)
+  factory$release(probe)
+  gc()
+  final <- cudaverseCUDA:::.native_memory_info()$used
+  expect_lte(abs(final - baseline), 1024^2)
+})
 test_that("native errors translate into structured cudaverse conditions", {
   factory <- cudaverse_cuda_backend_factory()
   raw <- simpleError("injected CUDA failure")
