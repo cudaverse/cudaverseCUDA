@@ -1,3 +1,15 @@
+# cudaverseCUDA 0.2.0.9000
+
+- Added reproducible CUDA 12.8.1 PTX kernels for casts and dense reductions.
+- Added dynamically loaded cuSOLVER 11 SVD and PCA for tall and wide matrices.
+- Added exact Euclidean and cosine distance blocks plus deterministic stable
+  top-k/kNN selection on the device.
+- Kept `PCA -> distance -> top-k` intermediates device-resident while
+  preserving the `cudaverse-stage/1` provenance schema.
+- Added structured failure, interruption recovery, repeated-pipeline, and
+  operation-owned peak-VRAM tests.
+- Added a reproducible Phase 2 benchmark/report contract.
+
 # cudaverseCUDA 0.1.0.9000
 
 - Added the first native CUDA backend contract implementation.

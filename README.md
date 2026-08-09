@@ -15,24 +15,40 @@ extension, not a second user-facing numerical API: users continue to call
 - Dense operations can remain device-resident between calls.
 - The public R API can remain stable while other backends are added later.
 
-The first development milestone intentionally implements only CUDA Driver
-detection, allocation/free, host-device transfer, synchronization, shared
-external-pointer ownership, and float64 cuBLAS matrix multiplication. PCA,
-distance, top-k, sparse operations, and automatic preference for native CUDA
-are later milestones.
+The dense Phase 2 milestone now implements:
+
+- CUDA Driver detection, allocation/free, transfer, synchronization, casts,
+  reductions, and shared external-pointer ownership;
+- float64 cuBLAS matrix multiplication;
+- cuSOLVER SVD and PCA for tall and wide matrices;
+- device-resident PCA scores, exact Euclidean/cosine distance blocks, and
+  deterministic top-k/kNN selection; and
+- structured backend errors, interruption recovery, allocation high-water
+  telemetry, and stage-level provenance.
+
+For the native path, `PCA -> distance -> top-k` keeps its large intermediate
+objects on the device. Only PCA's ordinary R result fields and the final
+`n x k` neighbour output are copied to R. Sparse CUDA operations remain outside
+this milestone.
 
 ## Runtime model
 
-The package compiles without a local CUDA Toolkit because it dynamically loads
-the NVIDIA CUDA Driver and cuBLAS 12 libraries at runtime. On Windows,
-`CUDAVERSE_CUBLAS_PATH` can point to `cublas64_12.dll`; on Linux it can point to
-`libcublas.so.12`. The directory containing an explicitly selected Windows DLL
-is used to resolve that library's dependencies.
+The package installs without a local CUDA Toolkit. Its small, package-owned
+dense-kernel PTX is reproducibly generated from
+[`tools/cuda/dense_kernels.cu`](tools/cuda/dense_kernels.cu) in a pinned CUDA
+12.8.1 CI container, while runtime libraries are dynamically discovered. On
+Windows, `CUDAVERSE_CUBLAS_PATH` and `CUDAVERSE_CUSOLVER_PATH` can point to
+`cublas64_12.dll` and `cusolver64_11.dll`; on Linux they can point to
+`libcublas.so.12` and `libcusolver.so.11`. The directory containing an
+explicitly selected Windows DLL is used to resolve that library's dependencies.
 
 No NVIDIA binary is bundled in the source package or current CI artifacts.
 macOS builds a clear unsupported-platform stub. An explicit CUDA request never
-silently falls back when the driver, cuBLAS, a required symbol, or memory is
-unavailable.
+silently falls back when the driver, cuBLAS, cuSOLVER, a required symbol, or
+memory is unavailable. Native remains explicitly opt-in in 0.2. The dense
+Phase 2 evidence is necessary but not sufficient for global `device = "auto"`
+preference: element-wise/broadcast and sparse CUDA paths must first pass the
+same full-surface compatibility gate.
 
 For development hardware tests:
 
@@ -45,7 +61,12 @@ testthat::test_local()
 See [`inst/reports/THIRD_PARTY_LICENSES.md`](inst/reports/THIRD_PARTY_LICENSES.md)
 and the generated CycloneDX SBOM before distributing any binary artifact.
 
+The machine-readable benchmark contract separates full host-to-result timing
+from the device-resident kNN continuation and reports cold time, median/p95,
+operation-owned peak VRAM, numerical error, installation size, and provenance.
+See [`tools/run-phase2-report.R`](tools/run-phase2-report.R).
+
 ## Status
 
-Development version `0.1.0.9000`. This extension is not being submitted to
+Development version `0.2.0.9000`. This extension is not being submitted to
 CRAN in the cudaverse 0.1 release cycle.

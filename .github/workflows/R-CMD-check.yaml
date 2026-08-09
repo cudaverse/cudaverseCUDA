@@ -11,17 +11,25 @@ permissions:
 
 jobs:
   check:
-    name: ${{ matrix.os }} (R release)
+    name: ${{ matrix.os }} (R ${{ matrix.r }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            r: release
+          - os: macos-latest
+            r: release
+          - os: ubuntu-latest
+            r: release
+          - os: ubuntu-latest
+            r: devel
     steps:
       - uses: actions/checkout@v7
       - uses: r-lib/actions/setup-r@v2
         with:
-          r-version: release
+          r-version: ${{ matrix.r }}
           use-public-rspm: true
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
@@ -39,7 +47,11 @@ jobs:
       - uses: r-lib/actions/setup-r@v2
         with:
           r-version: release
+      - name: Install SBOM validation dependencies
+        run: install.packages(c("digest", "jsonlite"))
+        shell: Rscript {0}
       - run: Rscript tools/check-redistributables.R .
+      - run: Rscript tools/check-sbom.R
 
   cuda-12-8-1-abi:
     runs-on: ubuntu-latest
@@ -59,6 +71,30 @@ jobs:
           name: cudaverseCUDA-linux-cuda-12.8.1-abi-${{ github.sha }}
           path: cudaverseCUDA.so
           retention-days: 14
+
+  cuda-12-8-1-ptx:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compile forward-compatible dense kernels
+        run: |
+          mkdir -p generated-kernels
+          nvcc -O3 -ptx -arch=compute_75 \
+            tools/cuda/dense_kernels.cu \
+            -o generated-kernels/cudaverse_dense_kernels.ptx
+          sha256sum generated-kernels/cudaverse_dense_kernels.ptx \
+            > generated-kernels/SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cudaverseCUDA-ptx-cuda-12.8.1-${{ github.sha }}
+          path: generated-kernels
+          retention-days: 14
+      - name: Verify the committed PTX is reproducible
+        run: |
+          cmp inst/kernels/cudaverse_dense_kernels.ptx \
+            generated-kernels/cudaverse_dense_kernels.ptx
+          (cd inst/kernels && sha256sum --check SHA256SUMS)
 
   package-artifacts:
     name: artifact (${{ matrix.os }})
@@ -80,6 +116,21 @@ jobs:
         shell: Rscript {0}
         run: |
           system2(file.path(R.home("bin"), "R"), c("CMD", "INSTALL", "--build", "."))
+      - name: Scan the built artifact
+        shell: Rscript {0}
+        run: |
+          source(file.path("tools", "check-redistributables.R"))
+          archives <- c(Sys.glob("cudaverseCUDA_*.zip"),
+                        Sys.glob("cudaverseCUDA_*.tar.gz"))
+          stopifnot(length(archives) == 1L)
+          extracted <- tempfile("cudaverseCUDA-artifact-")
+          dir.create(extracted)
+          if (endsWith(archives, ".zip")) {
+            utils::unzip(archives, exdir = extracted)
+          } else {
+            utils::untar(archives, exdir = extracted)
+          }
+          check_redistributables(extracted)
       - uses: actions/upload-artifact@v7
         with:
           name: cudaverseCUDA-${{ runner.os }}-${{ github.sha }}
