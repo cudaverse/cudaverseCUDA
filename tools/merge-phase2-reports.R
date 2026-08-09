@@ -50,6 +50,15 @@ if (length(missing)) {
 }
 
 report$generated_at_utc <- format(Sys.time(), tz = "UTC", usetz = TRUE)
+validation_file <- Sys.getenv("CUDAVERSE_PHASE2_VALIDATION", unset = "")
+if (nzchar(validation_file)) {
+  if (!file.exists(validation_file)) {
+    stop("The requested Phase 2 validation file does not exist.")
+  }
+  report$hardware_validation <- jsonlite::read_json(
+    validation_file, simplifyVector = FALSE
+  )
+}
 output <- Sys.getenv(
   "CUDAVERSE_REPORT_FILE",
   unset = file.path("inst", "reports", "phase2-rtx2000.json")
