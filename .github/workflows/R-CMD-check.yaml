@@ -116,7 +116,13 @@ jobs:
           use-public-rspm: true
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
+          extra-packages: |
+            any::digest
+            any::jsonlite
           needs: check
+      - name: Verify the SBOM payload before packaging
+        shell: Rscript {0}
+        run: source(file.path("tools", "check-sbom.R"))
       - name: Build installable artifact
         shell: Rscript {0}
         run: |
