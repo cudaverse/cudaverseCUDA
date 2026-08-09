@@ -62,6 +62,22 @@ if (length(missing)) {
 }
 
 values <- function(x) unname(unlist(x, use.names = FALSE))
+integer_value <- function(x) as.integer(values(x)[[1L]])
+for (index in seq_along(fragments)) {
+  contract <- fragments[[index]]$contract
+  valid_contract <- identical(integer_value(contract$warmup_runs), 5L) &&
+    identical(integer_value(contract$timed_runs), 10L) &&
+    identical(integer_value(contract$k), 15L) &&
+    identical(integer_value(contract$requested_components), 50L) &&
+    identical(integer_value(contract$batch_size), 256L) &&
+    identical(contract$dtype, "float64") &&
+    identical(contract$metric, "euclidean") &&
+    isTRUE(contract$center) && isTRUE(contract$scale)
+  if (!valid_contract) {
+    stop("Phase 2 benchmark contract mismatch: ", basename(files[[index]]), ".")
+  }
+}
+
 for (shape in required_shapes) {
   for (backend in required_backends) {
     result <- report$benchmarks[[shape]][[backend]]
@@ -128,7 +144,27 @@ if (nzchar(validation_file)) {
   report$hardware_validation <- jsonlite::read_json(
     validation_file, simplifyVector = FALSE
   )
-  if (!isTRUE(report$hardware_validation$passed)) {
+  validation <- report$hardware_validation
+  validation_sections <- list(
+    validation$lifecycle,
+    validation$structured_errors,
+    validation$cuda_errors,
+    validation$repeated_pipeline,
+    validation$interruption
+  )
+  valid_validation <- identical(
+    validation$schema, "cudaverse-native-phase2-validation/1"
+  ) &&
+    identical(integer_value(validation$lifecycle$cycles), 1000L) &&
+    identical(integer_value(validation$structured_errors$injections), 100L) &&
+    identical(integer_value(validation$cuda_errors$injections), 100L) &&
+    identical(integer_value(validation$repeated_pipeline$cycles), 100L) &&
+    all(vapply(validation_sections, function(x) isTRUE(x$passed), logical(1))) &&
+    isTRUE(validation$interruption$interrupted) &&
+    isTRUE(validation$interruption$backend_reusable) &&
+    !isTRUE(validation$source$cudaverse$dirty) &&
+    !isTRUE(validation$source$cudaverseCUDA$dirty)
+  if (!isTRUE(validation$passed) || !valid_validation) {
     stop("RTX 2000 Phase 2 stability validation failed.")
   }
 }
