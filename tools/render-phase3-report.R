@@ -161,7 +161,8 @@ lines <- c(
   "",
   paste(
     "Inputs are deterministic non-negative float64 `dgCMatrix` objects with",
-    "no empty rows or columns. Rows are sum-normalized to 1,000 and transformed",
+    "at least two non-zero values per row and no empty columns. Rows are",
+    "sum-normalized to 1,000 and transformed",
     "with `log1p()`; PCA returns 20 components and exact Euclidean kNN uses",
     "k = 15 with batch size 256. Each median/p95 uses five timed runs after",
     "two warm-ups. Full timing starts from the host sparse matrix and includes",
@@ -199,6 +200,7 @@ lines <- c(
   paste0("- PCA: `", pca_stages, "`."),
   paste0("- kNN: `", knn_stages, "`."),
   "- Every recorded provenance object uses `cudaverse-stage/1`.",
+  "- PCA parity compares the numerically identifiable subspace plus full truncated reconstruction, so a zero singular-value tie cannot create a false failure.",
   "- Normalized CSR storage and PCA scores are external pointers with shared ownership; PCA scores feed distance/top-k without a host round trip.",
   "- Stable top-k resolves equal distances by original one-based row index.",
   "",

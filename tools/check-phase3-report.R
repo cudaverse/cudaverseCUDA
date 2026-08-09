@@ -100,9 +100,15 @@ for (case_name in required_cases) {
       paste(label, "normalization exceeded tolerance")
     )
     require_gate(
+      number(result$validation$pca_effective_rank) >= 1L &&
+        number(result$validation$pca_effective_rank) <=
+          number(result$n_components),
+      paste(label, "has an invalid numerical PCA rank")
+    )
+    require_gate(
       number(result$validation$pca_subspace_projector_max_absolute_error) <=
         1e-8,
-      paste(label, "PCA projector exceeded tolerance")
+      paste(label, "identifiable PCA subspace exceeded tolerance")
     )
     require_gate(
       number(result$validation$pca_reconstruction_max_relative_error) <= 1e-8,

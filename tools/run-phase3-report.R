@@ -102,15 +102,16 @@ make_sparse_input <- function(rows, columns, density, seed) {
   set.seed(seed)
   target <- max(2L * rows + columns, ceiling(rows * columns * density))
   remaining <- max(0L, target - 2L * rows - columns)
+  first_column <- sample.int(columns, rows, replace = TRUE)
+  second_offset <- sample.int(columns - 1L, rows, replace = TRUE)
+  second_column <- ((first_column + second_offset - 1L) %% columns) + 1L
   i <- c(
-    seq_len(rows),
-    seq_len(rows),
-    rep.int(1L, columns),
+    rep(seq_len(rows), each = 2L),
+    sample.int(rows, columns, replace = TRUE),
     sample.int(rows, remaining, replace = TRUE)
   )
   j <- c(
-    rep.int(1L, rows),
-    rep.int(2L, rows),
+    as.vector(rbind(first_column, second_column)),
     seq_len(columns),
     sample.int(columns, remaining, replace = TRUE)
   )
@@ -159,8 +160,17 @@ validation_payload <- function(value, reference) {
 
   actual_rotation <- strip_matrix(value$pca$rotation)
   actual_scores <- strip_matrix(value$pca$x)
-  actual_projector <- tcrossprod(actual_rotation)
-  reference_projector <- tcrossprod(reference$pca$rotation)
+  rank_threshold <- max(reference$pca$sdev) *
+    max(nrow(reference$pca$x), nrow(reference$pca$rotation)) *
+    .Machine$double.eps
+  effective_rank <- sum(reference$pca$sdev > rank_threshold)
+  stable_components <- seq_len(effective_rank)
+  actual_projector <- tcrossprod(
+    actual_rotation[, stable_components, drop = FALSE]
+  )
+  reference_projector <- tcrossprod(
+    reference$pca$rotation[, stable_components, drop = FALSE]
+  )
   actual_reconstruction <- actual_scores %*% t(actual_rotation)
   reference_reconstruction <- reference$pca$x %*%
     t(reference$pca$rotation)
@@ -188,6 +198,8 @@ validation_payload <- function(value, reference) {
     pca_sdev_max_absolute_error = max(abs(
       unname(value$pca$sdev) - reference$pca$sdev
     )),
+    pca_effective_rank = effective_rank,
+    pca_rank_threshold = rank_threshold,
     pca_subspace_projector_max_absolute_error = projector_error,
     pca_reconstruction_max_absolute_error = reconstruction_error,
     pca_reconstruction_max_relative_error =
@@ -362,12 +374,12 @@ benchmark_backend <- function(backend, source, n_components) {
   cold_seconds <- cold$seconds
   cold$value <- NULL
   rm(cold)
-  gc(FALSE)
+  invisible(gc(FALSE))
   for (index in seq_len(warmup_runs)) {
     warm <- pipeline_once(backend, source, n_components)
     warm$value <- NULL
     rm(warm)
-    gc(FALSE)
+    invisible(gc(FALSE))
   }
 
   measurements <- matrix(
@@ -387,7 +399,7 @@ benchmark_backend <- function(backend, source, n_components) {
       timed$value <- NULL
     }
     rm(timed)
-    if (index != timed_runs) gc(FALSE)
+    if (index != timed_runs) invisible(gc(FALSE))
   }
 
   list(
@@ -452,7 +464,7 @@ for (case_name in names(cases)) {
     measurements <- result$measurements
 
     result$last <- NULL
-    gc(FALSE)
+    invisible(gc(FALSE))
     backend_synchronize(backend)
 
     tracker_before <- cudaverseCUDA:::.native_memory_tracker(reset = TRUE)
@@ -468,7 +480,7 @@ for (case_name in names(cases)) {
     memory_run$value <- NULL
     rm(memory_run)
     rm(result)
-    gc(FALSE)
+    invisible(gc(FALSE))
     factory$synchronize()
     if (identical(backend, "torch")) torch::cuda_synchronize()
     tracker_after <- cudaverseCUDA:::.native_memory_tracker()
@@ -532,7 +544,7 @@ for (case_name in names(cases)) {
   }
 
   rm(source, reference)
-  gc(FALSE)
+  invisible(gc(FALSE))
 }
 
 message("Running Phase 3 RTX lifecycle and recovery validation")
@@ -597,7 +609,7 @@ shared_ownership <- list(
     shared_released_error
 )
 rm(shared_csr, shared_coo)
-gc(FALSE)
+invisible(gc(FALSE))
 
 error_source <- Matrix::Diagonal(4L, x = 1:4)
 error_sparse <- cudaverse::cuda_sparse(error_source, device = "cuda")
@@ -625,7 +637,7 @@ structured_error$passed <- inherits(condition, "cudaverse_native_error") &&
   backend_reusable
 
 factory$synchronize()
-gc(FALSE)
+invisible(gc(FALSE))
 injected_before <- cudaverseCUDA:::.native_memory_tracker(reset = TRUE)$current
 injected <- tryCatch(
   cudaverse:::.backend_call(
@@ -634,7 +646,7 @@ injected <- tryCatch(
   error = identity
 )
 factory$synchronize()
-gc(FALSE)
+invisible(gc(FALSE))
 injected_after <- cudaverseCUDA:::.native_memory_tracker()
 injected_error <- list(
   classes = class(injected),
@@ -655,7 +667,7 @@ interrupt_sparse <- cudaverse::cuda_sparse(
 )
 interrupt_dense <- matrix(stats::rnorm(256 * 64), 256, 64)
 factory$synchronize()
-gc(FALSE)
+invisible(gc(FALSE))
 interrupt_before <- cudaverseCUDA:::.native_memory_tracker(reset = TRUE)$current
 interrupt_condition <- tryCatch({
   setTimeLimit(elapsed = 0.01, transient = TRUE)
@@ -669,7 +681,7 @@ interrupt_condition <- tryCatch({
   cpu = Inf, elapsed = Inf, transient = FALSE
 ))
 if (exists("interrupt_product", inherits = FALSE)) rm(interrupt_product)
-gc(FALSE)
+invisible(gc(FALSE))
 factory$synchronize()
 interrupt_after <- cudaverseCUDA:::.native_memory_tracker()$current
 interrupt_reusable <- isTRUE(all.equal(
