@@ -15,11 +15,11 @@ extension, not a second user-facing numerical API: users continue to call
 - Dense operations can remain device-resident between calls.
 - The public R API can remain stable while other backends are added later.
 
-The sparse Phase 3 milestone now implements:
+The Phase 4 release-hardening candidate now implements:
 
 - CUDA Driver detection, allocation/free, transfer, synchronization, casts,
   reductions, and shared external-pointer ownership;
-- float64 cuBLAS matrix multiplication;
+- float32/float64 cuBLAS matrix multiplication;
 - cuSOLVER SVD and PCA for tall and wide matrices;
 - device-resident PCA scores, exact Euclidean/cosine distance blocks, and
   deterministic top-k/kNN selection; and
@@ -29,6 +29,10 @@ The sparse Phase 3 milestone now implements:
   dense continuation; and
 - structured backend errors, interruption recovery, allocation high-water
   telemetry, and stage-level provenance.
+- device-native arithmetic, trailing-dimension broadcasting, reshape, and
+  transpose; and
+- a cached runtime self-test plus a versioned capability contract that makes
+  automatic native selection fail closed.
 
 For the native path,
 `sparse normalization -> PCA -> distance -> top-k` keeps its compute
@@ -50,16 +54,16 @@ explicitly selected Windows DLL is used to resolve that library's dependencies.
 No NVIDIA binary is bundled in the source package or current CI artifacts.
 macOS builds a clear unsupported-platform stub. An explicit CUDA request never
 silently falls back when the driver, cuBLAS, cuSOLVER, a required symbol, or
-memory is unavailable. Native remains explicitly opt-in in 0.3. Sparse Phase 3
-closes the sparse workflow gate, but global `device = "auto"` preference still
-waits for the element-wise arithmetic and broadcasting surface to pass the
-same full compatibility contract.
+memory is unavailable. In 0.4, `device = "auto"` prefers native only when the
+extension is installed, contract-compatible, capability-complete, has a healthy
+driver/cuBLAS/cuSOLVER/PTX runtime, and passes its cached self-test. Otherwise
+automatic selection continues to torch or records the CPU fallback. Backend
+order options cannot bypass these gates.
 
 For development hardware tests:
 
 ```r
 Sys.setenv(CUDAVERSE_NATIVE_TESTS = "true")
-options(cudaverse.cuda_backends = "native")
 testthat::test_local()
 ```
 
@@ -71,14 +75,16 @@ workflow timing from the device-resident PCA/kNN continuation and reports cold
 time, median/p95, operation-owned peak VRAM, numerical error, installation
 size, density, and provenance.
 
-See the completed [RTX 2000 Phase 3 report](inst/reports/STAGE3.md) and its
-[machine-readable evidence](inst/reports/phase3-rtx2000.json). The largest
-`10000 x 128` case measured a 0.21-second native median versus 13.40 seconds
-for base R and 5.46 seconds for torch, with numerical parity and zero tracked
-bytes remaining after cleanup. These measurements describe this machine and
-contract; they are not a universal speed claim.
+See the completed [RTX 2000 Phase 4 report](inst/reports/STAGE4.md) and its
+[machine-readable evidence](inst/reports/phase4-rtx2000.json). The report pins
+the Phase 3 evidence by SHA-256 and gates native median/p95, operation-owned
+peak VRAM, and installed size against it. In the largest `10000 x 128` case,
+the Phase 4 native median was 0.22 seconds versus 17.92 seconds for base R and
+7.17 seconds for torch, with numerical parity and zero tracked bytes remaining
+after cleanup. These measurements describe this machine and contract; they are
+not a universal speed claim.
 
 ## Status
 
-Development version `0.3.0.9000`. This extension is not being submitted to
+Development version `0.4.0.9000`. This extension is not being submitted to
 CRAN in the cudaverse 0.1 release cycle.
