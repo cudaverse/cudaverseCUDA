@@ -1,3 +1,19 @@
+# cudaverseCUDA 0.4.0.9000
+
+- Added capability-gated native automatic selection with a cached runtime
+  self-test covering transfer, float32/float64 matmul and reductions, sparse
+  normalization, arithmetic, reshape, broadcasting, and transpose.
+- Added native float32 cuBLAS matrix multiplication plus device-native
+  arithmetic, reshape, trailing-dimension broadcasting, and transpose so the
+  full public tensor surface can pass the automatic-selection gate.
+- Extended diagnostics with cuSOLVER state, runtime completeness, self-test
+  evidence, and automatic-selection eligibility.
+- Added the native PCA prediction adapter required for full automatic backend
+  compatibility.
+- Published the RTX 2000 Phase 4 report with automatic-selection evidence,
+  float32/float64 tensor parity, dense and sparse 1,000-cycle lifecycle checks,
+  and checksum-pinned Phase 3 benchmark-regression gates.
+
 # cudaverseCUDA 0.3.0.9000
 
 - Added shared-ownership device COO/CSR storage with Matrix-compatible

@@ -71,6 +71,9 @@ using cublasCreate_t = cublasStatus_t (*)(cublasHandle_t*);
 using cublasDgemm_t = cublasStatus_t (*)(
     cublasHandle_t, int, int, int, int, int, const double*,
     const double*, int, const double*, int, const double*, double*, int);
+using cublasSgemm_t = cublasStatus_t (*)(
+    cublasHandle_t, int, int, int, int, int, const float*,
+    const float*, int, const float*, int, const float*, float*, int);
 using cusolverDnCreate_t = cusolverStatus_t (*)(cusolverDnHandle_t*);
 using cusolverDnDgesvd_bufferSize_t = cusolverStatus_t (*)(
     cusolverDnHandle_t, int, int, int*);
@@ -110,6 +113,7 @@ struct BackendApi {
   cuLaunchKernel_t cuLaunchKernel = nullptr;
   cublasCreate_t cublasCreate = nullptr;
   cublasDgemm_t cublasDgemm = nullptr;
+  cublasSgemm_t cublasSgemm = nullptr;
   cusolverDnCreate_t cusolverDnCreate = nullptr;
   cusolverDnDgesvd_bufferSize_t cusolverDnDgesvd_bufferSize = nullptr;
   cusolverDnDgesvd_t cusolverDnDgesvd = nullptr;
@@ -151,6 +155,13 @@ struct ReductionMeta {
   int reduced[CUDAVERSE_MAX_RANK];
   int output_shape[CUDAVERSE_MAX_RANK];
   int output_to_input[CUDAVERSE_MAX_RANK];
+};
+
+struct BroadcastMeta {
+  int rank;
+  int source_shape[CUDAVERSE_MAX_RANK];
+  int target_shape[CUDAVERSE_MAX_RANK];
+  unsigned long long source_stride[CUDAVERSE_MAX_RANK];
 };
 
 struct SharedBuffer {
@@ -337,7 +348,8 @@ bool load_cublas(std::string& reason) {
     return false;
   }
   bool bound = bind_symbol(api.cublasCreate, api.cublas, "cublasCreate_v2") &&
-               bind_symbol(api.cublasDgemm, api.cublas, "cublasDgemm_v2");
+               bind_symbol(api.cublasDgemm, api.cublas, "cublasDgemm_v2") &&
+               bind_symbol(api.cublasSgemm, api.cublas, "cublasSgemm_v2");
   if (!bound) {
     reason = "The cuBLAS library is missing required symbols.";
     return false;
@@ -960,9 +972,12 @@ extern "C" SEXP C_cudaverse_cuda_load_kernels(SEXP path_sexp) {
 extern "C" SEXP C_cudaverse_cuda_diagnostics() {
   std::string reason;
   bool available = ensure_backend(reason);
+  std::string solver_reason;
+  bool solver_available = available && load_cusolver(solver_reason);
   SEXP result = PROTECT(named_list({
       "installed", "available", "device_count", "version", "reason",
-      "detection_error", "driver_version", "cublas_loaded"}));
+      "detection_error", "driver_version", "cublas_loaded",
+      "cusolver_loaded", "cusolver_error"}));
   SET_VECTOR_ELT(result, 0, Rf_ScalarLogical(1));
   SET_VECTOR_ELT(result, 1, Rf_ScalarLogical(available));
   SET_VECTOR_ELT(result, 2, Rf_ScalarInteger(api.device_count));
@@ -982,6 +997,10 @@ extern "C" SEXP C_cudaverse_cuda_diagnostics() {
                  available ? R_NilValue : Rf_mkString(reason.c_str()));
   SET_VECTOR_ELT(result, 6, Rf_ScalarInteger(api.driver_version));
   SET_VECTOR_ELT(result, 7, Rf_ScalarLogical(api.cublas_handle != nullptr));
+  SET_VECTOR_ELT(result, 8, Rf_ScalarLogical(solver_available));
+  SET_VECTOR_ELT(result, 9, solver_available || !available
+      ? R_NilValue
+      : Rf_mkString(solver_reason.c_str()));
   UNPROTECT(1);
   return result;
 }
@@ -1081,6 +1100,157 @@ extern "C" SEXP C_cudaverse_cuda_cast(SEXP pointer, SEXP dtype_sexp) {
   CUdeviceptr output_pointer = output->pointer;
   unsigned long long elements = input->elements;
   void* parameters[] = {&input_pointer, &output_pointer, &elements};
+  CUresult status = launch_1d(function, input->elements, parameters);
+  if (status != CUDA_SUCCESS) {
+    release_tracked_device_memory(output->pointer, output->bytes);
+    delete output;
+    check_cuda(status, kernel);
+  }
+  return make_pointer(output, false);
+}
+
+extern "C" SEXP C_cudaverse_cuda_reshape(SEXP pointer,
+                                           SEXP shape_sexp) {
+  require_backend();
+  SharedBuffer* input = get_buffer(pointer);
+  std::size_t elements = 0;
+  std::vector<int> shape = parse_shape(shape_sexp, elements);
+  if (elements != input->elements) {
+    Rf_error("Native CUDA reshape must preserve the number of values.");
+  }
+  if (shape == input->shape) return make_pointer(input, true);
+  SharedBuffer* output = allocate_buffer(input->dtype, shape, elements);
+  CUresult status = api.cuMemcpyDtoD(
+      output->pointer, input->pointer, input->bytes);
+  if (status != CUDA_SUCCESS) {
+    release_tracked_device_memory(output->pointer, output->bytes);
+    delete output;
+    check_cuda(status, "cuMemcpyDtoD(reshape)");
+  }
+  return make_pointer(output, false);
+}
+
+extern "C" SEXP C_cudaverse_cuda_broadcast(SEXP pointer,
+                                             SEXP shape_sexp) {
+  require_backend();
+  require_kernels();
+  SharedBuffer* input = get_buffer(pointer);
+  std::size_t output_elements = 0;
+  std::vector<int> target_shape = parse_shape(shape_sexp, output_elements);
+  if (target_shape.size() > CUDAVERSE_MAX_RANK ||
+      target_shape.size() < input->shape.size()) {
+    Rf_error("Native CUDA broadcasting supports one to %d dimensions.",
+             CUDAVERSE_MAX_RANK);
+  }
+
+  BroadcastMeta meta{};
+  meta.rank = static_cast<int>(target_shape.size());
+  std::size_t padding = target_shape.size() - input->shape.size();
+  unsigned long long stride = 1;
+  for (int dimension = 0; dimension < meta.rank; ++dimension) {
+    int source_extent = dimension < static_cast<int>(padding)
+        ? 1
+        : input->shape[static_cast<std::size_t>(dimension) - padding];
+    int target_extent = target_shape[dimension];
+    if (source_extent != 1 && source_extent != target_extent) {
+      Rf_error("Native CUDA tensor shapes are not broadcast-compatible.");
+    }
+    meta.source_shape[dimension] = source_extent;
+    meta.target_shape[dimension] = target_extent;
+    meta.source_stride[dimension] = stride;
+    stride *= static_cast<unsigned long long>(source_extent);
+  }
+
+  const char* kernel = input->dtype == DType::Float64
+      ? "cudaverse_broadcast_f64"
+      : (input->dtype == DType::Float32
+             ? "cudaverse_broadcast_f32"
+             : "cudaverse_broadcast_i32");
+  CUfunction function = get_kernel(kernel);
+  SharedBuffer* output = allocate_buffer(
+      input->dtype, target_shape, output_elements);
+  CUdeviceptr input_pointer = input->pointer;
+  CUdeviceptr output_pointer = output->pointer;
+  unsigned long long kernel_elements = output_elements;
+  void* parameters[] = {
+      &input_pointer, &output_pointer, &meta, &kernel_elements};
+  CUresult status = launch_1d(function, output_elements, parameters);
+  if (status != CUDA_SUCCESS) {
+    release_tracked_device_memory(output->pointer, output->bytes);
+    delete output;
+    check_cuda(status, kernel);
+  }
+  return make_pointer(output, false);
+}
+
+extern "C" SEXP C_cudaverse_cuda_binary(SEXP left_pointer,
+                                          SEXP right_pointer,
+                                          SEXP operation_sexp) {
+  require_backend();
+  require_kernels();
+  SharedBuffer* left = get_buffer(left_pointer);
+  SharedBuffer* right = get_buffer(right_pointer);
+  if (left->dtype != right->dtype || left->shape != right->shape) {
+    Rf_error("Native CUDA binary operands must have matching dtype and shape.");
+  }
+  if (left->dtype == DType::Integer) {
+    Rf_error("Native CUDA integer arithmetic must be promoted before execution.");
+  }
+  if (TYPEOF(operation_sexp) != STRSXP || XLENGTH(operation_sexp) != 1 ||
+      STRING_ELT(operation_sexp, 0) == NA_STRING) {
+    Rf_error("Native CUDA binary operation must be one character string.");
+  }
+  std::string operation_name = CHAR(STRING_ELT(operation_sexp, 0));
+  int operation = operation_name == "+" ? 0
+      : (operation_name == "-" ? 1
+      : (operation_name == "*" ? 2
+      : (operation_name == "/" ? 3
+      : (operation_name == "^" ? 4 : -1))));
+  if (operation < 0) Rf_error("Unsupported native CUDA binary operation.");
+
+  const char* kernel = left->dtype == DType::Float64
+      ? "cudaverse_binary_f64"
+      : "cudaverse_binary_f32";
+  CUfunction function = get_kernel(kernel);
+  SharedBuffer* output = allocate_buffer(
+      left->dtype, left->shape, left->elements);
+  CUdeviceptr left_values = left->pointer;
+  CUdeviceptr right_values = right->pointer;
+  CUdeviceptr output_values = output->pointer;
+  unsigned long long elements = left->elements;
+  void* parameters[] = {
+      &left_values, &right_values, &output_values, &operation, &elements};
+  CUresult status = launch_1d(function, left->elements, parameters);
+  if (status != CUDA_SUCCESS) {
+    release_tracked_device_memory(output->pointer, output->bytes);
+    delete output;
+    check_cuda(status, kernel);
+  }
+  return make_pointer(output, false);
+}
+
+extern "C" SEXP C_cudaverse_cuda_transpose(SEXP pointer) {
+  require_backend();
+  require_kernels();
+  SharedBuffer* input = get_buffer(pointer);
+  if (input->shape.size() != 2) {
+    Rf_error("Native CUDA transpose requires one two-dimensional tensor.");
+  }
+  int rows = input->shape[0];
+  int columns = input->shape[1];
+  std::vector<int> output_shape{columns, rows};
+  const char* kernel = input->dtype == DType::Float64
+      ? "cudaverse_transpose_f64"
+      : (input->dtype == DType::Float32
+             ? "cudaverse_transpose_f32"
+             : "cudaverse_transpose_i32");
+  CUfunction function = get_kernel(kernel);
+  SharedBuffer* output = allocate_buffer(
+      input->dtype, output_shape, input->elements);
+  CUdeviceptr input_values = input->pointer;
+  CUdeviceptr output_values = output->pointer;
+  void* parameters[] = {
+      &input_values, &output_values, &rows, &columns};
   CUresult status = launch_1d(function, input->elements, parameters);
   if (status != CUDA_SUCCESS) {
     release_tracked_device_memory(output->pointer, output->bytes);
@@ -1832,8 +2002,10 @@ extern "C" SEXP C_cudaverse_cuda_matmul(SEXP left_pointer,
   require_backend();
   SharedBuffer* left = get_buffer(left_pointer);
   SharedBuffer* right = get_buffer(right_pointer);
-  if (left->dtype != DType::Float64 || right->dtype != DType::Float64) {
-    Rf_error("Native CUDA matmul currently requires float64 tensors.");
+  if (left->dtype != right->dtype ||
+      (left->dtype != DType::Float64 && left->dtype != DType::Float32)) {
+    Rf_error(
+        "Native CUDA matmul requires matching float32 or float64 tensors.");
   }
   if (left->shape.size() != 2 || right->shape.size() != 2 ||
       left->shape[1] != right->shape[0]) {
@@ -1842,19 +2014,34 @@ extern "C" SEXP C_cudaverse_cuda_matmul(SEXP left_pointer,
   int m = left->shape[0];
   int k = left->shape[1];
   int n = right->shape[1];
+  R_CheckUserInterrupt();
   SharedBuffer* output = allocate_buffer(
-      DType::Float64, {m, n}, static_cast<std::size_t>(m) * n);
-  const double alpha = 1.0;
-  const double beta = 0.0;
-  cublasStatus_t status = api.cublasDgemm(
-      api.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k, &alpha,
-      reinterpret_cast<const double*>(left->pointer), m,
-      reinterpret_cast<const double*>(right->pointer), k, &beta,
-      reinterpret_cast<double*>(output->pointer), m);
+      left->dtype, {m, n}, static_cast<std::size_t>(m) * n);
+  cublasStatus_t status = CUBLAS_STATUS_SUCCESS;
+  const char* operation = nullptr;
+  if (left->dtype == DType::Float64) {
+    const double alpha = 1.0;
+    const double beta = 0.0;
+    status = api.cublasDgemm(
+        api.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k, &alpha,
+        reinterpret_cast<const double*>(left->pointer), m,
+        reinterpret_cast<const double*>(right->pointer), k, &beta,
+        reinterpret_cast<double*>(output->pointer), m);
+    operation = "cublasDgemm";
+  } else {
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    status = api.cublasSgemm(
+        api.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k, &alpha,
+        reinterpret_cast<const float*>(left->pointer), m,
+        reinterpret_cast<const float*>(right->pointer), k, &beta,
+        reinterpret_cast<float*>(output->pointer), m);
+    operation = "cublasSgemm";
+  }
   if (status != CUBLAS_STATUS_SUCCESS) {
     release_tracked_device_memory(output->pointer, output->bytes);
     delete output;
-    check_cublas(status, "cublasDgemm");
+    check_cublas(status, operation);
   }
   return make_pointer(output, false);
 }
@@ -1952,8 +2139,16 @@ static const R_CallMethodDef call_methods[] = {
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_sparse_matmul_dense), 2},
     {"C_cudaverse_cuda_sparse_to_dense",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_sparse_to_dense), 1},
-    {"C_cudaverse_cuda_cast",
-     reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_cast), 2},
+     {"C_cudaverse_cuda_cast",
+      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_cast), 2},
+     {"C_cudaverse_cuda_reshape",
+      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_reshape), 2},
+     {"C_cudaverse_cuda_broadcast",
+      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_broadcast), 2},
+     {"C_cudaverse_cuda_binary",
+      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_binary), 3},
+     {"C_cudaverse_cuda_transpose",
+      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_transpose), 1},
     {"C_cudaverse_cuda_reduce",
      reinterpret_cast<DL_FUNC>(&C_cudaverse_cuda_reduce), 4},
     {"C_cudaverse_cuda_svd",

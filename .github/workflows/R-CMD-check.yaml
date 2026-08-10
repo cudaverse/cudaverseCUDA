@@ -52,11 +52,14 @@ jobs:
         shell: Rscript {0}
       - run: Rscript tools/check-redistributables.R .
       - run: Rscript tools/check-sbom.R
-      - name: Verify the checked-in Phase 3 hardware evidence
+      - name: Verify the checked-in hardware evidence
         run: |
           Rscript tools/check-phase3-report.R
           Rscript tools/render-phase3-report.R
           git diff --exit-code -- inst/reports/STAGE3.md
+          Rscript tools/check-phase4-report.R
+          Rscript tools/render-phase4-report.R
+          git diff --exit-code -- inst/reports/STAGE4.md
 
   cuda-12-8-1-abi:
     runs-on: ubuntu-latest
@@ -142,6 +145,28 @@ jobs:
             utils::untar(archives, exdir = extracted)
           }
           check_redistributables(extracted)
+      - name: Install and load the built artifact without CUDA
+        shell: Rscript {0}
+        run: |
+          archives <- c(Sys.glob("cudaverseCUDA_*.zip"),
+                        Sys.glob("cudaverseCUDA_*.tar.gz"))
+          stopifnot(length(archives) == 1L)
+          library_path <- tempfile("cudaverseCUDA-install-")
+          dir.create(library_path)
+          utils::install.packages(
+            archives,
+            repos = NULL,
+            lib = library_path,
+            type = if (.Platform$OS.type == "windows") "win.binary" else "source"
+          )
+          .libPaths(c(library_path, .libPaths()))
+          factory <- cudaverseCUDA::cudaverse_cuda_backend_factory()
+          diagnostics <- factory$diagnostics()
+          stopifnot(
+            identical(factory$name, "native"),
+            is.list(diagnostics),
+            isTRUE(diagnostics$installed)
+          )
       - uses: actions/upload-artifact@v7
         with:
           name: cudaverseCUDA-${{ runner.os }}-${{ github.sha }}
