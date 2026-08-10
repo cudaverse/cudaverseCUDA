@@ -2,12 +2,12 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.6",
   "serialNumber": "urn:uuid:be1a9f8b-d4f0-4bc4-b4f4-0a2bbfd5b9c1",
-  "version": 3,
+  "version": 4,
   "metadata": {
     "component": {
       "type": "library",
       "name": "cudaverseCUDA",
-      "version": "0.3.0.9000",
+      "version": "0.4.0.9000",
       "licenses": [{"license": {"id": "MIT"}}]
     }
   },
@@ -57,7 +57,7 @@
       "name": "cudaverse_dense_kernels.ptx",
       "scope": "required",
       "hashes": [
-        {"alg": "SHA-256", "content": "b2dba3e4bd3255614a2949be98749586ab63410280a63e2602478745d0b4c0c0"}
+        {"alg": "SHA-256", "content": "472b9ff3febe6e5e25417b081f6fab1a9f77f8ab1e69f2e7bcf2333187644e92"}
       ],
       "licenses": [{"license": {"id": "MIT"}}],
       "properties": [
