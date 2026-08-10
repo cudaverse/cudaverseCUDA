@@ -1,4 +1,15 @@
-# cudaverseCUDA
+# cudaverseCUDA (archived)
+
+> **This repository has been retired.** Its lightweight native CUDA backend
+> was integrated directly into
+> [`cudaverse`](https://github.com/cudaverse/cudaverse) on the
+> `develop/native-cuda` branch. Active code, documentation, issues, and future
+> development now live in that repository. Users do not need to install a
+> separate backend package.
+
+This repository remains read-only to preserve development history and the
+Phase 1-4 evidence that preceded consolidation. The historical description
+below documents the former extension architecture.
 
 `cudaverseCUDA` is the optional lightweight native CUDA backend for
 [`cudaverse`](https://github.com/cudaverse/cudaverse). It is an implementation
