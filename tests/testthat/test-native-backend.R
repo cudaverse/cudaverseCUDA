@@ -24,12 +24,14 @@ test_that("native diagnostics and factory follow the extension contract", {
     "reshape", "broadcast", "binary", "transpose", "matmul", "reduce",
     "sparse_from_coo", "sparse_to_host",
     "sparse_reduce", "sparse_normalize", "sparse_matmul_dense",
-    "algorithm_sparse_pca", "algorithm_sparse_knn_prepare",
+    "algorithm_pca_predict", "algorithm_sparse_pca",
+    "algorithm_sparse_knn_prepare",
     "synchronize", "release", "error_translate"
   ) %in% names(factory)))
   expect_true(all(c(
     "sparse-coo", "sparse-csr", "sparse-normalize", "sparse-matmul",
-    "sparse-reduce", "sparse-pca", "sparse-knn", "dtype-float32",
+    "sparse-reduce", "sparse-pca", "sparse-knn", "pca-predict",
+    "dtype-float32",
     "dtype-float64", "runtime-self-test", "arithmetic", "reshape",
     "broadcast", "transpose"
   ) %in% factory$capabilities()))
@@ -502,6 +504,31 @@ test_that("native float32 and float64 transfer and cuBLAS matmul match base R", 
     expect_identical(provenance$backend, "native")
     expect_identical(provenance$output_device, "cuda")
   }
+})
+
+test_that("native PCA prediction remains compatible with automatic selection", {
+  skip_if_not(identical(Sys.getenv("CUDAVERSE_NATIVE_TESTS"), "true"))
+  skip_if_not(nzchar(Sys.getenv("CUDAVERSE_CUSOLVER_PATH")))
+  skip_if_not(isTRUE(cudaverseCUDA:::.native_diagnostics()$auto_eligible))
+  old <- options(cudaverse.cuda_backends = NULL)
+  on.exit(options(old), add = TRUE)
+
+  training <- matrix(seq_len(48) / 11, 12, 4)
+  prediction <- training[c(2L, 7L, 11L), , drop = FALSE]
+  fit <- cudaverse::cuda_pca(
+    training, n_components = 3L, center = TRUE, scale. = TRUE,
+    device = "auto"
+  )
+  scores <- predict(fit, prediction, device = "auto")
+  transformed <- sweep(prediction, 2L, fit$center, "-")
+  transformed <- sweep(transformed, 2L, fit$scale, "/")
+  reference <- transformed %*% fit$rotation
+
+  expect_equal(as.vector(scores), as.vector(reference), tolerance = 1e-8)
+  expect_identical(attr(scores, "device", exact = TRUE), "cuda")
+  expect_true(all(
+    cudaverse::cuda_provenance(scores)$backend == "native"
+  ))
 })
 
 test_that("shared native ownership frees an allocation exactly once", {

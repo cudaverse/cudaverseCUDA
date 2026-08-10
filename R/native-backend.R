@@ -212,6 +212,7 @@
     "transpose",
     "svd",
     "pca",
+    "pca-predict",
     "distance",
     "knn",
     "stable-topk",
@@ -394,6 +395,32 @@
   on.exit(.native_release(storage), add = TRUE)
   .native_pca_from_storage(
     storage, dim(x), n_components, center, scale
+  )
+}
+
+.native_algorithm_pca_predict <- function(values, center, scale, rotation) {
+  .native_ensure_kernels()
+  transformed <- values
+  if (is.numeric(center)) {
+    transformed <- sweep(transformed, 2L, center, "-")
+  }
+  if (is.numeric(scale)) {
+    transformed <- sweep(transformed, 2L, scale, "/")
+  }
+  values_storage <- .native_from_host(
+    transformed, "float64", dim(transformed)
+  )
+  on.exit(.native_release(values_storage), add = TRUE)
+  rotation_storage <- .native_from_host(
+    rotation, "float64", dim(rotation)
+  )
+  on.exit(.native_release(rotation_storage), add = TRUE)
+  scores_storage <- .native_matmul(values_storage, rotation_storage)
+  on.exit(.native_release(scores_storage), add = TRUE)
+  matrix(
+    .native_to_host(scores_storage),
+    nrow = nrow(values),
+    ncol = ncol(rotation)
   )
 }
 
@@ -598,6 +625,7 @@ cudaverse_cuda_backend_factory <- function() {
     reduce = .native_reduce,
     algorithm_svd = .native_algorithm_svd,
     algorithm_pca = .native_algorithm_pca,
+    algorithm_pca_predict = .native_algorithm_pca_predict,
     algorithm_sparse_pca = .native_algorithm_sparse_pca,
     algorithm_distance = .native_algorithm_distance,
     algorithm_knn_prepare = .native_knn_prepare,
