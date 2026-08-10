@@ -16,6 +16,13 @@ struct ReductionMeta {
   int output_to_input[CUDAVERSE_MAX_RANK];
 };
 
+struct BroadcastMeta {
+  int rank;
+  int source_shape[CUDAVERSE_MAX_RANK];
+  int target_shape[CUDAVERSE_MAX_RANK];
+  unsigned long long source_stride[CUDAVERSE_MAX_RANK];
+};
+
 template <typename T, typename Accumulator>
 __device__ void reduce_value(const T* input, T* output,
                              const ReductionMeta& meta,
@@ -124,6 +131,74 @@ extern "C" __global__ void cudaverse_cast_f32_i32(
   if (index < elements) output[index] = static_cast<int>(input[index]);
 }
 
+template <typename T>
+__device__ T binary_value(T left, T right, int operation) {
+  if (operation == 0) return left + right;
+  if (operation == 1) return left - right;
+  if (operation == 2) return left * right;
+  if (operation == 3) return left / right;
+  return static_cast<T>(pow(left, right));
+}
+
+template <typename T>
+__device__ void binary_kernel(const T* left, const T* right, T* output,
+                              int operation, unsigned long long elements) {
+  unsigned long long index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < elements) {
+    output[index] = binary_value(left[index], right[index], operation);
+  }
+}
+
+extern "C" __global__ void cudaverse_binary_f64(
+    const double* left, const double* right, double* output,
+    int operation, unsigned long long elements) {
+  binary_kernel(left, right, output, operation, elements);
+}
+
+extern "C" __global__ void cudaverse_binary_f32(
+    const float* left, const float* right, float* output,
+    int operation, unsigned long long elements) {
+  binary_kernel(left, right, output, operation, elements);
+}
+
+template <typename T>
+__device__ void broadcast_kernel(const T* input, T* output,
+                                 const BroadcastMeta& meta,
+                                 unsigned long long elements) {
+  unsigned long long index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index >= elements) return;
+  unsigned long long remainder = index;
+  unsigned long long source_index = 0;
+  for (int dimension = 0; dimension < meta.rank; ++dimension) {
+    int coordinate = static_cast<int>(
+        remainder % meta.target_shape[dimension]);
+    remainder /= meta.target_shape[dimension];
+    if (meta.source_shape[dimension] != 1) {
+      source_index += static_cast<unsigned long long>(coordinate) *
+                      meta.source_stride[dimension];
+    }
+  }
+  output[index] = input[source_index];
+}
+
+extern "C" __global__ void cudaverse_broadcast_f64(
+    const double* input, double* output, BroadcastMeta meta,
+    unsigned long long elements) {
+  broadcast_kernel(input, output, meta, elements);
+}
+
+extern "C" __global__ void cudaverse_broadcast_f32(
+    const float* input, float* output, BroadcastMeta meta,
+    unsigned long long elements) {
+  broadcast_kernel(input, output, meta, elements);
+}
+
+extern "C" __global__ void cudaverse_broadcast_i32(
+    const int* input, int* output, BroadcastMeta meta,
+    unsigned long long elements) {
+  broadcast_kernel(input, output, meta, elements);
+}
+
 extern "C" __global__ void cudaverse_column_stats_f64(
     const double* input, double* center, double* scale, int rows, int columns,
     int use_center, int use_scale) {
@@ -172,8 +247,9 @@ extern "C" __global__ void cudaverse_scale_columns_f64(
   output[index] = input[index] * scale[column];
 }
 
-extern "C" __global__ void cudaverse_transpose_f64(
-    const double* input, double* output, int rows, int columns) {
+template <typename T>
+__device__ void transpose_kernel(const T* input, T* output,
+                                 int rows, int columns) {
   unsigned long long index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned long long elements =
       static_cast<unsigned long long>(rows) * columns;
@@ -182,6 +258,21 @@ extern "C" __global__ void cudaverse_transpose_f64(
   int column = static_cast<int>(index / rows);
   output[column + static_cast<unsigned long long>(row) * columns] =
       input[index];
+}
+
+extern "C" __global__ void cudaverse_transpose_f64(
+    const double* input, double* output, int rows, int columns) {
+  transpose_kernel(input, output, rows, columns);
+}
+
+extern "C" __global__ void cudaverse_transpose_f32(
+    const float* input, float* output, int rows, int columns) {
+  transpose_kernel(input, output, rows, columns);
+}
+
+extern "C" __global__ void cudaverse_transpose_i32(
+    const int* input, int* output, int rows, int columns) {
+  transpose_kernel(input, output, rows, columns);
 }
 
 extern "C" __global__ void cudaverse_gather_rows_f64(

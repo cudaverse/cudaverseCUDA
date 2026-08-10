@@ -1,5 +1,7 @@
 .native_kernel_state <- new.env(parent = emptyenv())
 .native_kernel_state$loaded <- FALSE
+.native_self_test_state <- new.env(parent = emptyenv())
+.native_self_test_state$result <- NULL
 
 .native_kernel_path <- function() {
   system.file(
@@ -24,6 +26,142 @@
   invisible(TRUE)
 }
 
+.native_self_test <- function(reset = FALSE) {
+  if (isTRUE(reset)) .native_self_test_state$result <- NULL
+  if (!is.null(.native_self_test_state$result)) {
+    return(.native_self_test_state$result)
+  }
+
+  started <- unname(proc.time()[["elapsed"]])
+  dense_resources <- list()
+  sparse_resources <- list()
+  keep_dense <- function(storage) {
+    dense_resources[[length(dense_resources) + 1L]] <<- storage
+    storage
+  }
+  keep_sparse <- function(storage) {
+    sparse_resources[[length(sparse_resources) + 1L]] <<- storage
+    storage
+  }
+  on.exit({
+    for (storage in rev(dense_resources)) {
+      tryCatch(.native_release(storage), error = function(error) NULL)
+    }
+    for (storage in rev(sparse_resources)) {
+      tryCatch(.native_sparse_release(storage), error = function(error) NULL)
+    }
+  }, add = TRUE)
+
+  checks <- character()
+  result <- tryCatch({
+    .native_ensure_kernels()
+    values <- matrix(c(1, 2, 3, 4), nrow = 2L)
+    identity <- diag(2)
+
+    left64 <- keep_dense(.native_from_host(values, "float64", c(2L, 2L)))
+    right64 <- keep_dense(.native_from_host(identity, "float64", c(2L, 2L)))
+    product64 <- keep_dense(.native_matmul(left64, right64))
+    actual64 <- matrix(.native_to_host(product64), nrow = 2L)
+    if (!isTRUE(all.equal(actual64, values, tolerance = 1e-12))) {
+      stop("float64 transfer/matmul parity failed", call. = FALSE)
+    }
+    sum64 <- .native_reduce(product64, NULL, FALSE, "sum")
+    keep_dense(sum64$storage)
+    if (!isTRUE(all.equal(.native_to_host(sum64$storage), 10,
+                          tolerance = 1e-12))) {
+      stop("float64 reduction parity failed", call. = FALSE)
+    }
+    checks <- c(checks, "float64-transfer-matmul-reduce")
+
+    left32 <- keep_dense(.native_from_host(values, "float32", c(2L, 2L)))
+    right32 <- keep_dense(.native_from_host(identity, "float32", c(2L, 2L)))
+    product32 <- keep_dense(.native_matmul(left32, right32))
+    actual32 <- matrix(.native_to_host(product32), nrow = 2L)
+    if (!isTRUE(all.equal(actual32, values, tolerance = 1e-6))) {
+      stop("float32 transfer/matmul parity failed", call. = FALSE)
+    }
+    sum32 <- .native_reduce(product32, NULL, FALSE, "sum")
+    keep_dense(sum32$storage)
+    if (!isTRUE(all.equal(.native_to_host(sum32$storage), 10,
+                          tolerance = 1e-5))) {
+      stop("float32 reduction parity failed", call. = FALSE)
+    }
+    checks <- c(checks, "float32-transfer-matmul-reduce")
+
+    binary32 <- keep_dense(.native_binary(product32, product32, "+"))
+    if (!isTRUE(all.equal(
+      matrix(.native_to_host(binary32), nrow = 2L),
+      values * 2,
+      tolerance = 1e-5
+    ))) {
+      stop("float32 arithmetic parity failed", call. = FALSE)
+    }
+    reshaped32 <- keep_dense(.native_reshape(
+      product32, c(2L, 2L), 4L
+    ))
+    if (!isTRUE(all.equal(
+      .native_to_host(reshaped32),
+      as.vector(values),
+      tolerance = 1e-6
+    ))) {
+      stop("float32 reshape parity failed", call. = FALSE)
+    }
+    transposed32 <- keep_dense(.native_transpose(product32))
+    if (!isTRUE(all.equal(
+      matrix(.native_to_host(transposed32), nrow = 2L),
+      t(values),
+      tolerance = 1e-6
+    ))) {
+      stop("float32 transpose parity failed", call. = FALSE)
+    }
+    vector32 <- keep_dense(.native_from_host(c(5, 7), "float32", 2L))
+    broadcast32 <- keep_dense(.native_broadcast(
+      vector32, 2L, c(2L, 2L)
+    ))
+    if (!isTRUE(all.equal(
+      matrix(.native_to_host(broadcast32), nrow = 2L),
+      matrix(c(5, 5, 7, 7), nrow = 2L),
+      tolerance = 1e-6
+    ))) {
+      stop("float32 broadcast parity failed", call. = FALSE)
+    }
+    checks <- c(checks, "arithmetic-reshape-broadcast-transpose")
+
+    sparse <- keep_sparse(.native_sparse_from_coo(
+      c(1L, 2L), c(1L, 2L), c(2, 4), c(2L, 2L), "csr"
+    ))
+    normalized <- .native_sparse_normalize(sparse, 0L, 1, FALSE)
+    keep_sparse(normalized$storage)
+    normalized_host <- .native_sparse_to_host(normalized$storage)
+    if (!isTRUE(all.equal(normalized_host$values, c(1, 1),
+                          tolerance = 1e-12))) {
+      stop("sparse normalization parity failed", call. = FALSE)
+    }
+    checks <- c(checks, "sparse-transfer-normalize")
+
+    .native_synchronize()
+    list(
+      passed = TRUE,
+      reason = "self_test_passed",
+      error = NULL,
+      checks = checks
+    )
+  }, error = function(error) {
+    list(
+      passed = FALSE,
+      reason = "self_test_failed",
+      error = conditionMessage(error),
+      checks = checks
+    )
+  })
+  result$duration_ms <- max(
+    0,
+    (unname(proc.time()[["elapsed"]]) - started) * 1000
+  )
+  .native_self_test_state$result <- result
+  result
+}
+
 .native_diagnostics <- function() {
   diagnostics <- .Call(C_cudaverse_cuda_diagnostics)
   kernel_error <- NULL
@@ -39,7 +177,66 @@
     diagnostics$reason <- "kernel_unavailable"
     diagnostics$detection_error <- kernel_error
   }
+  diagnostics$runtime_complete <- isTRUE(diagnostics$available) &&
+    isTRUE(diagnostics$cublas_loaded) &&
+    isTRUE(diagnostics$cusolver_loaded) &&
+    isTRUE(diagnostics$kernels_loaded)
+  diagnostics$self_test <- if (isTRUE(diagnostics$available) &&
+                               isTRUE(diagnostics$kernels_loaded)) {
+    .native_self_test()
+  } else {
+    list(
+      passed = FALSE,
+      reason = "backend_unavailable",
+      error = diagnostics$detection_error,
+      checks = character(),
+      duration_ms = 0
+    )
+  }
+  diagnostics$auto_eligible <- diagnostics$runtime_complete &&
+    isTRUE(diagnostics$self_test$passed)
   diagnostics
+}
+
+.native_capabilities <- function() {
+  c(
+    "driver-detection",
+    "allocation",
+    "transfer",
+    "cast",
+    "matmul",
+    "reduce",
+    "arithmetic",
+    "reshape",
+    "broadcast",
+    "transpose",
+    "svd",
+    "pca",
+    "distance",
+    "knn",
+    "stable-topk",
+    "sparse",
+    "sparse-coo",
+    "sparse-csr",
+    "sparse-normalize",
+    "sparse-matmul",
+    "sparse-reduce",
+    "sparse-pca",
+    "sparse-knn",
+    "synchronize",
+    "shared-ownership",
+    "dtype-float32",
+    "dtype-float64",
+    "runtime-self-test"
+  )
+}
+
+.native_contract <- function() {
+  list(
+    schema = "cudaverse-backend/1",
+    provider = "cudaverseCUDA",
+    capabilities = .native_capabilities()
+  )
 }
 
 .native_from_host <- function(x, dtype, shape, dimnames = NULL) {
@@ -117,6 +314,25 @@
 .native_cast <- function(storage, dtype) {
   .native_ensure_kernels()
   .Call(C_cudaverse_cuda_cast, storage, as.character(dtype))
+}
+
+.native_reshape <- function(storage, source_shape, target_shape) {
+  .Call(C_cudaverse_cuda_reshape, storage, as.integer(target_shape))
+}
+
+.native_broadcast <- function(storage, source_shape, target_shape) {
+  .native_ensure_kernels()
+  .Call(C_cudaverse_cuda_broadcast, storage, as.integer(target_shape))
+}
+
+.native_binary <- function(x, y, operator) {
+  .native_ensure_kernels()
+  .Call(C_cudaverse_cuda_binary, x, y, as.character(operator))
+}
+
+.native_transpose <- function(storage) {
+  .native_ensure_kernels()
+  .Call(C_cudaverse_cuda_transpose, storage)
 }
 
 .native_reduce <- function(storage, dim, keepdim, method) {
@@ -360,30 +576,9 @@ cudaverse_cuda_backend_factory <- function() {
   list(
     name = "native",
     device = "cuda",
+    contract = .native_contract,
     diagnostics = .native_diagnostics,
-    capabilities = function() c(
-      "driver-detection",
-      "allocation",
-      "transfer",
-      "cast",
-      "matmul",
-      "reduce",
-      "svd",
-      "pca",
-      "distance",
-      "knn",
-      "stable-topk",
-      "sparse",
-      "sparse-coo",
-      "sparse-csr",
-      "sparse-normalize",
-      "sparse-matmul",
-      "sparse-reduce",
-      "sparse-pca",
-      "sparse-knn",
-      "synchronize",
-      "shared-ownership"
-    ),
+    capabilities = .native_capabilities,
     from_host = .native_from_host,
     to_host = .native_to_host,
     sparse_from_coo = .native_sparse_from_coo,
@@ -395,6 +590,10 @@ cudaverse_cuda_backend_factory <- function() {
     sparse_share = .native_sparse_share,
     sparse_release = .native_sparse_release,
     cast = .native_cast,
+    reshape = .native_reshape,
+    broadcast = .native_broadcast,
+    binary = .native_binary,
+    transpose = .native_transpose,
     matmul = .native_matmul,
     reduce = .native_reduce,
     algorithm_svd = .native_algorithm_svd,
